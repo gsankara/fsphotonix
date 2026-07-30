@@ -263,4 +263,6 @@ phase-modulator hardware line at
 This package is an independent implementation of the physics, not of any specific
 published design.
 
-BSD-3-Clause.
+## Licence
+
+BSD-3-Clause — see [LICENSE](LICENSE). Copyright (c) 2026 Ganesh Chennimalai Sankaran.

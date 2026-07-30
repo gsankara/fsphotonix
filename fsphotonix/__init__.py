@@ -39,6 +39,8 @@ Quick start
 from __future__ import annotations
 
 __version__ = "0.1.0"
+__license__ = "BSD-3-Clause"
+__author__ = "Ganesh Chennimalai Sankaran"
 
 from . import analysis, engine, registry, units, viz
 from .config import build_machine, build_system, load_file, load_text
