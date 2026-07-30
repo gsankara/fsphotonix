@@ -1,0 +1,61 @@
+# Analog iterative machine skeleton: optical fan-in/fan-out plus an annealed
+# global feedback loop.  Run: fsphotonix run configs/aim_loop.yaml --iterations 200
+name: aim_loop
+wavelength: 1550.0e-9
+
+grids:
+  panel:  {width: 5.0e-3,  height: 5.0e-3, pitch: 50.0e-6}
+  screen: {width: 14.0e-3, height: 14.0e-3, pitch: 150.0e-6}
+
+stages:
+  - name: src
+    type: source
+    grid: panel
+    source:
+      type: laser_array
+      n: 4
+      ny: 4
+      pitch: 1.0e-3
+      power: 1.0e-3
+      linewidth: 0.0
+      rin_dbc_hz: -150.0
+      profile: {type: tophat, diameter: 880.0e-6, order: 10}
+
+  - name: panel
+    type: modulator
+    grid: panel
+    z: 0.0
+    spot_mode: true
+    device: {type: ipms_piston}
+    layout: {nx: 4, ny: 4, pitch: 1.0e-3, gap: 120.0e-6}
+    route:
+      z: 0.06
+      targets: [[-3.0e-3, 0.0], [-1.0e-3, 0.0], [1.0e-3, 0.0], [3.0e-3, 0.0]]
+      tiling: grid
+      gap: 30.0e-6
+
+  - name: screen
+    type: detector
+    grid: screen
+    z: 0.06
+    detector:
+      type: photodiode
+      positions_in: [[-3.0e-3, 0.0], [-1.0e-3, 0.0], [1.0e-3, 0.0], [3.0e-3, 0.0]]
+      active_diameter: 1.4e-3
+      responsivity: 0.95
+      bandwidth: 1.0e9
+      output: watts
+      n_time: 1
+
+loops:
+  - name: anneal
+    sense: screen
+    actuate: src
+    mode: drive
+    scope: global
+    period: 1
+    delay: 0
+    controller:
+      - {type: normalize, mode: max}
+      - {type: nonlinearity, kind: tanh, scale: 2.0}
+      - {type: noise, sigma: 0.3, decay: 0.99}

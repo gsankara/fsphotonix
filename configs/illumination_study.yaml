@@ -1,0 +1,49 @@
+# Collimator array in front of the panel: the illuminated footprint is tunable and
+# is the knob that trades capture efficiency against illumination cross-talk.
+# See examples/02_collimator_crosstalk.py for the sweep this configures one point of.
+name: illumination_study
+wavelength: 1550.0e-9
+
+grids:
+  panel:  {width: 4.0e-3,  height: 1.2e-3, pitch: 2.0e-6}
+  screen: {width: 20.0e-3, height: 2.0e-3, pitch: 20.0e-6}
+
+stages:
+  - name: src
+    type: source
+    grid: panel
+    source:
+      type: collimated_array
+      n: 5
+      pitch: 500.0e-6
+      distance: 6.0e-3               # lenslet -> panel
+      illumination_diameter: 450.0e-6  # the tuning knob; defocus is solved for
+      stray_fraction: 0.02           # inter-lenslet leakage
+      power: 1.0e-3
+      collimator:
+        mfd: 10.4e-6
+        focal_length: 1.5e-3
+        clear_aperture: 475.0e-6
+
+  - name: panel
+    type: modulator
+    grid: panel
+    z: 0.0
+    device: {type: lcos}
+    layout: {nx: 5, ny: 1, pitch: 500.0e-6, gap: 100.0e-6}   # inter-input guard gap
+    route:
+      z: 0.08
+      targets: [[-6.0e-3, 0.0], [6.0e-3, 0.0]]
+      tiling: stripes
+      gap: 20.0e-6                                            # intra-input guard gap
+
+  - name: screen
+    type: detector
+    grid: screen
+    z: 0.08
+    detector:
+      type: camera
+      nx: 1000
+      ny: 100
+      pitch: 20.0e-6
+      integration_time: 5.0e-6

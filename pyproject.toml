@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fsphotonix"
+version = "0.1.0"
+description = "Large-scale free-space photonic system simulator: sources, holographic modulator arrays, cascaded diffractive stages, detector arrays and analog/digital feedback loops"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "BSD-3-Clause" }
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+full = ["scipy>=1.10", "matplotlib>=3.7", "pyyaml>=6.0"]
+gpu = ["cupy-cuda12x"]
+dev = ["pytest>=7", "scipy>=1.10", "matplotlib>=3.7", "pyyaml>=6.0"]
+
+[project.scripts]
+fsphotonix = "fsphotonix.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["fsphotonix*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::RuntimeWarning"]

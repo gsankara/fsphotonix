@@ -1,0 +1,55 @@
+# 8 COTS transceivers -> holographic 3-way fan-out -> camera.
+# Run: fsphotonix run configs/fanout.yaml
+name: cots_fanout
+wavelength: 1310.0e-9
+
+grids:
+  panel:  {width: 6.0e-3,  height: 1.5e-3, pitch: 25.0e-6}
+  screen: {width: 24.0e-3, height: 3.2e-3, pitch: 25.0e-6}
+
+stages:
+  - name: src
+    type: source
+    grid: panel
+    source:
+      type: cots_transceiver
+      n: 8
+      pitch: 600.0e-6
+      center_wavelength: 1310.0e-9
+      freq_span: 100.0e9        # all parts inside one 100 GHz slot, mutually incoherent
+      baud: 25.0e9
+      modulation: nrz
+      extinction_ratio_db: 8.0
+      collimated_waist: 240.0e-6
+      power: 1.0e-3
+
+  - name: panel
+    type: modulator
+    grid: panel
+    z: 0.0
+    spot_mode: true             # beamlet propagation: scales to large panels
+    device:
+      type: ipms_piston         # Fraunhofer-IPMS-style MEMS piston array
+      pitch: 16.0e-6
+      stroke: 400.0e-9
+    layout: {nx: 8, ny: 1, pitch: 600.0e-6, gap: 100.0e-6}
+    route:
+      z: 0.08
+      targets: [[-8.0e-3, 0.0], [0.0, 0.0], [8.0e-3, 0.0]]
+      tiling: stripes
+      gap: 20.0e-6              # guard gap between the CGHs of one input
+      grating: focuser
+
+  - name: screen
+    type: detector
+    grid: screen
+    z: 0.08
+    detector:
+      type: camera
+      nx: 960
+      ny: 128
+      pitch: 25.0e-6
+      integration_time: 2.0e-6
+      qe: 0.75
+      full_well_e: 60000.0
+      adc_bits: 12
