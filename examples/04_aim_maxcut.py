@@ -19,6 +19,7 @@ import time
 
 import numpy as np
 
+import _figure
 import fsphotonix as fp
 from fsphotonix.solvers.aim import (
     AnalogIterativeMachine,
@@ -76,18 +77,17 @@ def main() -> None:
           f"{np.corrcoef(aim.gradient(res_opt.spins), J @ res_opt.spins + h)[0, 1]:.4f}")
     print(f"  final annealing temperature:         {aim.noise.temperature:.4f}")
 
-    if "--plot" in sys.argv:
-        import matplotlib.pyplot as plt
-
+    if _figure.wanted():
+        plt = _figure.pyplot()
         fig, ax = plt.subplots(1, 2, figsize=(11, 4))
-        fp.viz.show_convergence(res_opt, ax=ax[0],
-                                reference=-(A.sum() / 2 - 2 * best_cut))
+        # cut = (sum(W) - s.W.s)/4 and E = 0.5 s.W.s, so the optimal cut
+        # corresponds to the *minimum* energy sum(W)/2 - 2*cut
+        e_opt = A.sum() / 2 - 2 * best_cut
+        fp.viz.show_convergence(res_opt, ax=ax[0], reference=e_opt)
         ax[0].set_title("through the optics")
-        fp.viz.show_convergence(res_num, ax=ax[1],
-                                reference=-(A.sum() / 2 - 2 * best_cut))
+        fp.viz.show_convergence(res_num, ax=ax[1], reference=e_opt)
         ax[1].set_title("ideal arithmetic")
-        fig.tight_layout()
-        plt.show()
+        _figure.finish(fig, "04_aim_convergence")
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ import sys
 
 import numpy as np
 
+import _figure
 import fsphotonix as fp
 from fsphotonix.analysis import cgh_gap_report, illumination_crosstalk, illumination_sweep
 from fsphotonix.sources.collimator import CollimatedArray, Collimator
@@ -92,9 +93,8 @@ def main() -> None:
               f"{g['spot_size_um']:10.1f}um {g['aperture_loss_db']:10.2f} dB   "
               f"guard ok={g['detector_guard_ok']}")
 
-    if "--plot" in sys.argv:
-        import matplotlib.pyplot as plt
-
+    if _figure.wanted():
+        plt = _figure.pyplot()
         fig, ax = plt.subplots(1, 2, figsize=(11, 4))
         for gap, s in curves.items():
             ax[0].plot(s["diameter_m"] * 1e6, s["capture"] * 100, "o-",
@@ -109,8 +109,7 @@ def main() -> None:
         for a in ax:
             a.legend(fontsize=8)
             a.grid(alpha=0.3)
-        fig.tight_layout()
-        plt.show()
+        _figure.finish(fig, "02_illumination_tradeoff")
 
 
 if __name__ == "__main__":

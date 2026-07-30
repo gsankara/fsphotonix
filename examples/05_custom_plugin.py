@@ -15,6 +15,7 @@ This example adds three things and runs them in a real system:
 
 import numpy as np
 
+import _figure
 import fsphotonix as fp
 from fsphotonix.detectors.base import Detector, DetectorOutput
 from fsphotonix.modulators.gratings.base import Grating, Order, carrier_frequency
@@ -186,9 +187,9 @@ def main() -> None:
     print(f"  optical power {np.round(out.optical_power * 1e12, 3)} pW")
     print(f"  dead-time saturated fraction {out.meta['saturated_fraction']:.2f}")
 
+    g = MetasurfaceDeflector(theta_x=0.03)
     print("\nthe metasurface's phase is geometric (no lambda0/lambda scaling), so the")
     print("deflection follows the grating equation while the efficiency is resonant:")
-    g = MetasurfaceDeflector(theta_x=0.03)
     for lam in (1490e-9, 1550e-9, 1610e-9):
         o = g.orders(lam)[0]
         print(f"  {lam*1e9:.0f} nm: efficiency {o.efficiency:.3f}, "
@@ -201,6 +202,25 @@ def main() -> None:
     m = fp.Machine(system, loops=[loop])
     m.run(4)
     print(f"  drives after 4 iterations: {src.get_drive()}")
+
+    if _figure.wanted():
+        plt = _figure.pyplot()
+        fig, ax = plt.subplots(1, 2, figsize=(11, 4))
+        lams = np.linspace(1400e-9, 1700e-9, 200)
+        ax[0].plot(lams * 1e9, [g.efficiency(l) for l in lams], lw=1.8)
+        for lam in (1490e-9, 1550e-9, 1610e-9):
+            ax[0].plot(lam * 1e9, g.efficiency(lam), "o", ms=7)
+        ax[0].set_xlabel("wavelength [nm]")
+        ax[0].set_ylabel("diffraction efficiency")
+        ax[0].set_title("custom grating: resonant metasurface")
+        ax[0].grid(alpha=0.3)
+
+        ax[1].plot(lams * 1e9, np.degrees(np.arcsin(lams * g.fx)), lw=1.8, color="C1")
+        ax[1].set_xlabel("wavelength [nm]")
+        ax[1].set_ylabel("deflection [deg]")
+        ax[1].set_title("geometric phase: angle still obeys the grating equation")
+        ax[1].grid(alpha=0.3)
+        _figure.finish(fig, "05_custom_plugin")
 
 
 if __name__ == "__main__":

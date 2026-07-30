@@ -24,7 +24,7 @@ env/
 .DS_Store
 Thumbs.db
 
-# Simulation outputs
+# Simulation outputs (figures under docs/ are checked in deliberately)
 *.npz
 *.png
-!docs/*.png
+!docs/**/*.png

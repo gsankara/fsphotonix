@@ -16,6 +16,7 @@ import sys
 
 import numpy as np
 
+import _figure
 import fsphotonix as fp
 from fsphotonix.analysis import power_budget, transfer_matrix
 
@@ -139,15 +140,13 @@ def main() -> None:
               f"  (swing over last 5: {np.ptp(series[-5:])*1e6:.3f} uW)")
     drive.write(np.ones(N))
 
-    if "--plot" in sys.argv:
-        import matplotlib.pyplot as plt
-
+    if _figure.wanted():
+        plt = _figure.pyplot()
         fig, axes = plt.subplots(1, 3, figsize=(14, 3.8))
         fp.viz.show_system(system, ax=axes[0])
         fp.viz.show_spots(trace.spot_lists["stage2"], ax=axes[1])
         fp.viz.show_detector(trace.outputs["screen"], ax=axes[2])
-        fig.tight_layout()
-        plt.show()
+        _figure.finish(fig, "03_cascade")
 
 
 if __name__ == "__main__":

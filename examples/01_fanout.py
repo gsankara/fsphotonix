@@ -11,6 +11,7 @@ import sys
 
 import numpy as np
 
+import _figure
 import fsphotonix as fp
 from fsphotonix.analysis import cgh_gap_report, power_budget, spot_metrics
 
@@ -71,15 +72,13 @@ def main() -> None:
     cam_out = trace.outputs["screen"]
     print(f"\ncamera: {cam_out}, well fill {cam_out.meta['well_fill']:.2%}")
 
-    if "--plot" in sys.argv:
-        import matplotlib.pyplot as plt
-
+    if _figure.wanted():
+        plt = _figure.pyplot()
         fig, axes = plt.subplots(1, 3, figsize=(15, 4.4))
         fp.viz.show_hologram(panel, system["panel"].grid, LAM, axes=axes[:2])
         fp.viz.show_intensity(trace.fields["screen"], ax=axes[2], log=True,
                               title="screen (dB)")
-        fig.tight_layout()
-        plt.show()
+        _figure.finish(fig, "01_fanout")
 
 
 if __name__ == "__main__":

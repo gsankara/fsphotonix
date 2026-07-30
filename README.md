@@ -63,6 +63,48 @@ fsphotonix mvm --n-in 8 --n-out 8       # build and characterise an optical mult
 fsphotonix aim -n 12 --iterations 400   # Max-Cut through the optics
 ```
 
+## What it looks like
+
+One illuminated region divided into five sub-apertures, each carrying its own
+off-axis focusing hologram aimed at a different point on the screen. The device's
+fill-factor dead space is visible in the amplitude; the five fringe orientations in
+the phase are the five deflections; the screen shows the ring plus the residual
+zero order that a finite-efficiency modulator always leaves on axis.
+
+![Holographic fan-out](docs/figures/01_fanout.png)
+
+The illumination trade-off this architecture cannot escape. Widening the
+collimated footprint fills more of the hologram aperture, but the overspill crosses
+the guard gap onto the neighbouring input's hologram and is diffracted to *that*
+input's targets. A wider guard gap buys cross-talk margin and costs throughput.
+
+![Illumination trade-off](docs/figures/02_illumination_tradeoff.png)
+
+A two-stage cascade, where stage 1's detection screen is replaced by a second
+modulator array: the plane layout, the 14 beamlets leaving stage 2, and the
+four-element readout.
+
+![Two-stage cascade](docs/figures/03_cascade.png)
+
+Max-Cut on the analog iterative machine, solved through real propagation (left)
+against the ideal-arithmetic control (right). Both reach the brute-force optimum;
+the optical loop takes roughly twice as many iterations to settle, which is the
+cost of the photonics made visible.
+
+![AIM convergence](docs/figures/04_aim_convergence.png)
+
+A plugged-in technology the package does not ship: a resonant metasurface whose
+efficiency is strongly wavelength dependent while its phase is geometric, so the
+deflection still follows the grating equation.
+
+![Custom plugin](docs/figures/05_custom_plugin.png)
+
+Regenerate all of them with:
+
+```bash
+for f in examples/0*.py; do python "$f" --save docs/figures; done
+```
+
 ## What is modelled
 
 ### 1. Light sources — `fsphotonix.sources`

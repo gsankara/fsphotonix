@@ -94,8 +94,23 @@ def show_spots(spots, ax=None, screen: Grid | None = None, scale: float = 200.0,
     ax.set_xlabel("x [mm]")
     ax.set_ylabel("y [mm]")
     ax.set_title(f"{len(t)} beamlets, {p.sum()*1e3:.4g} mW")
-    ax.set_aspect("equal")
+    # A fan-out along one axis leaves the other with (almost) no spread; with an
+    # equal aspect that collapses the axes to zero height and makes the layout
+    # transform singular, so give every axis a floor on its span.
+    _pad_limits(ax, t["x"] * 1e3, t["y"] * 1e3)
+    ax.set_aspect("equal", adjustable="datalim")
     return ax
+
+
+def _pad_limits(ax, xs, ys, floor_frac: float = 0.15) -> None:
+    """Set axis limits with a margin, never letting a span reach zero."""
+    xs, ys = np.asarray(xs, dtype=float), np.asarray(ys, dtype=float)
+    span = max(np.ptp(xs), np.ptp(ys), 1e-12)
+    pad = max(0.05 * span, 1e-9)
+    half = max(span, floor_frac * span) / 2 + pad
+    cx, cy = 0.5 * (xs.min() + xs.max()), 0.5 * (ys.min() + ys.max())
+    ax.set_xlim(cx - half, cx + half)
+    ax.set_ylim(cy - half, cy + half)
 
 
 def show_detector(out, ax=None, title: str = ""):
@@ -136,14 +151,20 @@ def show_system(system, ax=None):
     colors = {"SourceStage": "#d97706", "ModulatorStage": "#2563eb",
               "DetectorStage": "#16a34a", "ElementStage": "#7c3aed",
               "FunctionStage": "#64748b"}
+    seen: dict[float, int] = {}
     for s in system.stages:
-        z = s.z * 1e3
+        z = round(s.z * 1e3, 6)
+        # planes can share a z (a source and the panel it illuminates); stagger
+        # their labels so they stay legible
+        level = seen.get(z, 0)
+        seen[z] = level + 1
         h = 1.0
         ax.plot([z, z], [-h, h], lw=6, color=colors.get(type(s).__name__, "0.4"),
-                solid_capstyle="butt")
-        ax.text(z, h * 1.15, s.name, ha="center", va="bottom", fontsize=8, rotation=45)
+                solid_capstyle="butt", alpha=1.0 if level == 0 else 0.55)
+        ax.text(z, h * (1.15 + 0.45 * level), s.name, ha="center", va="bottom",
+                fontsize=8, rotation=45)
+    ax.set_ylim(-1.6, 2.4 + 0.45 * max(max(seen.values()) - 1, 0))
     ax.set_xlabel("optical path z [mm]")
     ax.set_yticks([])
-    ax.set_ylim(-1.6, 2.4)
     ax.set_title(f"{system.name}: {len(system)} planes")
     return ax
