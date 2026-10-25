@@ -75,7 +75,12 @@ def test_apodization_trades_throughput_for_sidelobes():
     t_rect, b_rect = (_window_profile("none")[0], _window_profile("none")[1])
     t_hann, b_hann = (_window_profile("hann")[0], _window_profile("hann")[1])
     assert t_rect == pytest.approx(1.0)
-    assert t_hann == pytest.approx(0.375, abs=0.01)  # mean(w^2) for Hann
+    # a square aperture windows both axes, so the power it passes is mean(w^2)
+    # once per axis -- and it has to agree with what the optics actually renders
+    assert t_hann == pytest.approx(0.375**2, abs=0.01)
+    from fsphotonix.modulators.geometry import Apodized, Rect
+    rendered = Apodized(inner=Rect(width=200e-6), window="hann").power_throughput()
+    assert t_hann == pytest.approx(rendered, rel=0.05)
     assert b_rect == pytest.approx(1.0)
     assert b_hann > 1.5  # Hann broadens the main lobe
 

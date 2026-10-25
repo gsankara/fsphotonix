@@ -74,8 +74,10 @@ from functools import lru_cache
 
 import numpy as np
 
+from . import engine as eng
 from .detectors.photodiode import PhotodiodeArray
 from .modulators.devices import ModulatorDevice, as_device
+from .modulators.geometry import WINDOWS as _WINDOWS
 
 __all__ = [
     "ProblemSpec",
@@ -87,6 +89,7 @@ __all__ = [
     "baseline",
     "compare",
     "measure_routing",
+    "window_metrics",
 ]
 
 
@@ -293,33 +296,22 @@ class Requirements:
 # --------------------------------------------------------------------------- #
 # the coefficients -- a model, and labelled as one
 # --------------------------------------------------------------------------- #
-#: Sub-aperture amplitude windows, as functions of a normalised coordinate
-#: ``t`` in [-1/2, 1/2] across the aperture.  Everything else about a window --
-#: its throughput, how much it broadens the spot, and how much it leaks into the
-#: neighbouring detector -- is *computed* from these below rather than tabulated,
-#: so the three stay mutually consistent and a new window needs one line here.
-WINDOWS: dict[str, object] = {
-    "none": lambda t: np.ones_like(t),
-    "tukey": lambda t: _tukey(t, alpha=0.5),
-    "hann": lambda t: 0.5 + 0.5 * np.cos(2 * np.pi * t),
-    "blackman": lambda t: (0.42 + 0.5 * np.cos(2 * np.pi * t)
-                           + 0.08 * np.cos(4 * np.pi * t)),
-}
+#: Sub-aperture amplitude windows.  Imported from
+#: :mod:`fsphotonix.modulators.geometry` rather than redefined here, so the cost
+#: this module *predicts* for a window and the taper the optics actually renders
+#: come from one definition.  They did drift once: a 2-D separable aperture
+#: passes ``mean(w^2)`` per axis, so Hann passes 0.375**2 = 0.141 of the incident
+#: power, not the 1-D 0.375 this module first assumed.
+#:
+#: Everything else about a window -- its throughput, how much it broadens the
+#: spot, how much it leaks into the neighbouring detector -- is *computed* from
+#: the window below rather than tabulated, so the three stay consistent and a new
+#: window needs one line in the geometry table.
+WINDOWS = _WINDOWS
 
 _WINDOW_SAMPLES = 256
 _WINDOW_PAD = 16384
 _window_cache: dict[str, tuple] = {}
-
-
-def _tukey(t, alpha: float = 0.5):
-    """Tapered-cosine window: flat in the middle, cosine over the outer ``alpha``."""
-    a = np.abs(t)
-    edge = 0.5 * (1 - alpha / 2)
-    out = np.ones_like(a)
-    taper = a > edge
-    if alpha > 0:
-        out[taper] = 0.5 * (1 + np.cos(np.pi * (a[taper] - edge) / (alpha / 2) / 1.0))
-    return np.clip(out, 0.0, 1.0)
 
 
 def _window_profile(name: str) -> tuple:
@@ -338,8 +330,12 @@ def _window_profile(name: str) -> tuple:
         raise ValueError(f"unknown apodization {name!r}; have {sorted(WINDOWS)}")
     n, N = _WINDOW_SAMPLES, _WINDOW_PAD
     t = (np.arange(n) - (n - 1) / 2) / n
-    w = np.asarray(WINDOWS[key](t), dtype=float)
-    throughput = float(np.mean(w**2))
+    # the geometry table writes windows against eng.xp so they render on either
+    # backend; this module wants plain numpy to transform
+    w = eng.to_numpy(WINDOWS[key](eng.asarray(t))).astype(float)
+    # a square aperture applies the window along *both* axes, so the power it
+    # passes is mean(w^2) once per axis -- Hann passes 0.141, not 0.375
+    throughput = float(np.mean(w**2)) ** 2
 
     H = np.fft.rfft(w, N)
     power = np.abs(H) ** 2
@@ -375,6 +371,16 @@ def _capture(name: str, center_u: float, half_u: float) -> float:
     neg = (-u >= lo) & (-u <= hi)
     neg[0] = False  # DC belongs to one side only
     return float((power[pos].sum() + power[neg].sum()) / total)
+
+
+def window_metrics(name: str | None) -> tuple[float, float]:
+    """``(power throughput, main-lobe broadening)`` of an apodization window.
+
+    The public way in: :mod:`fsphotonix.analysis` uses it so that a measured
+    apodization report and a predicted capacity estimate quote the same numbers.
+    """
+    throughput, broadening, _, _, _ = _window_profile(name or "none")
+    return throughput, broadening
 
 
 @lru_cache(maxsize=4096)

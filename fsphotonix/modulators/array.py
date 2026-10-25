@@ -29,7 +29,7 @@ from ..fields import Channel, FieldSet
 from ..grid import Grid
 from ..registry import register
 from .devices import ModulatorDevice, as_device
-from .geometry import Aperture, Rect, as_aperture, tile_region
+from .geometry import Aperture, Rect, apodize_aperture, as_aperture, tile_region
 from .gratings.base import Grating, Order, as_grating
 from .gratings.cgh import MultiSpotHologram, SpotTarget
 from .gratings.lenses import SpotFocuser
@@ -128,6 +128,8 @@ class ModulatorArray:
         self.region_gap: tuple[float, float] | None = None
         #: guard gap last used between the sub-regions of one input
         self.subregion_gap: float = 0.0
+        #: apodization window last applied to the sub-apertures, if any
+        self.subregion_apodization: str | None = None
         self._version = 0
         self._cache: dict = {}
 
@@ -225,6 +227,8 @@ class ModulatorArray:
         tiling: str = "grid",
         weights: Sequence[float] | None = None,
         gap: float = 0.0,
+        apodize: str | None = None,
+        apodize_mode: str = "auto",
         absolute: bool = True,
         incident=None,
         **grating_kw,
@@ -247,6 +251,19 @@ class ModulatorArray:
         ``grating`` picks the per-target element: ``focuser`` (off-axis focusing
         hologram, spot size set by the sub-aperture), ``blazed``, ``ramp``.
 
+        ``apodize`` names an amplitude window (``hann``, ``blackman``, ``tukey``)
+        that tapers each sub-aperture to zero at its rim.  A hard-edged
+        sub-aperture has ``sinc`` far-field wings falling only as ``1/u^2``,
+        which across a lattice of driven detectors sets a cross-talk floor that
+        no guard band escapes; a window replaces those wings with a much faster
+        roll-off.  It is the alternative to ``gap``, not an addition to it: the
+        gap removes the shared-edge discontinuity by leaving dead space, the
+        window by making the field vanish there.  Both cost -- the gap shrinks
+        the sub-aperture, the window passes less light (Hann: 0.141 on a square
+        aperture) and widens every spot by about 1.6x, which eats the detector
+        guard from the other side.  :func:`fsphotonix.analysis.apodization_sweep`
+        measures which one wins for a given layout.
+
         ``incident`` is the direction cosine pair ``(alpha, beta)`` of the light
         arriving at this region.  A thin diffractive element *adds* its grating
         vector to the incident one, so a hologram designed for normal incidence
@@ -262,8 +279,10 @@ class ModulatorArray:
             tg = [SpotTarget(t.x, t.y, t.z, float(w), t.label) for t, w in zip(tg, weights)]
 
         self.subregion_gap = float(gap)
+        self.subregion_apodization = apodize
         if mode == "subregions":
-            subs = tile_region(r.aperture, len(tg), mode=tiling, gap=gap)
+            subs = tile_region(r.aperture, len(tg), mode=tiling, gap=gap,
+                               apodize=apodize, apodize_mode=apodize_mode)
             r.subregions = []
             for (ap, off), t in zip(subs, tg):
                 origin = (r.center[0] + off[0], r.center[1] + off[1]) if absolute else (0.0, 0.0)
@@ -279,7 +298,11 @@ class ModulatorArray:
                 MultiSpotHologram(targets=[_rebase(t, origin) for t in tg], range_z=z,
                                   design_wavelength=lam, aperture_size=(w, h),
                                   **grating_kw), incident, lam)
-            r.subregions = [SubRegion(grating=g, label="cgh",
+            # one sub-region using the whole region, so the window goes on the
+            # region aperture itself
+            ap = (apodize_aperture(r.aperture, apodize, apodize_mode)
+                  if apodize else None)
+            r.subregions = [SubRegion(grating=g, aperture=ap, label="cgh",
                                       meta={"targets": [(t.x, t.y, t.z) for t in tg]})]
         elif mode == "superpose":
             from .gratings.composite import Superposition
@@ -288,7 +311,9 @@ class ModulatorArray:
             gs = [_make_grating(grating, _rebase(t, origin), lam, **grating_kw) for t in tg]
             g = _compensate(Superposition(gratings=gs, weights=[t.weight for t in tg],
                                           design_wavelength=lam), incident, lam)
-            r.subregions = [SubRegion(grating=g, label="superposed",
+            ap = (apodize_aperture(r.aperture, apodize, apodize_mode)
+                  if apodize else None)
+            r.subregions = [SubRegion(grating=g, aperture=ap, label="superposed",
                                       meta={"targets": [(t.x, t.y, t.z) for t in tg]})]
         else:
             raise ValueError(f"unknown routing mode {mode!r}")
@@ -531,6 +556,7 @@ class ModulatorArray:
             "subaperture_um": a * 1e6,
             "intra_input_gap_um": (float(np.mean(sub_gaps)) * 1e6 if sub_gaps
                                   else self.subregion_gap * 1e6),
+            "apodization": self.subregion_apodization,
             "pixels_per_subaperture": a / self.device.pitch,
             "spot_size_um": spot * 1e6,
             "target_pitch_um": tp * 1e6,

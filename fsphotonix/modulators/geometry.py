@@ -43,10 +43,17 @@ WINDOWS: dict[str, object] = {
 
 
 def _tukey(t, alpha: float = 0.5):
-    """Tapered cosine: flat in the middle, cosine over the outer ``alpha``."""
+    """Tapered cosine: flat over the middle, cosine over the outer ``alpha``.
+
+    The flat region is ``|t| <= (1 - alpha)/2`` and the taper runs from there to
+    the rim, so the window reaches exactly zero at ``|t| = 1/2`` -- which is the
+    point of using it at all. ``alpha=0`` is a hard edge, ``alpha=1`` is a raised
+    cosine over the whole aperture.
+    """
     a = eng.xp.abs(t)
-    edge = 0.5 * (1 - alpha / 2)
-    taper = 0.5 * (1 + eng.xp.cos(np.pi * (a - edge) / (alpha / 2)))
+    edge = (1.0 - alpha) / 2.0
+    width = max(alpha / 2.0, 1e-12)
+    taper = 0.5 * (1 + eng.xp.cos(np.pi * (a - edge) / width))
     return eng.xp.clip(eng.xp.where(a > edge, taper, 1.0), 0.0, 1.0)
 
 
@@ -413,7 +420,8 @@ class Apodized(Aperture):
         return float((support * taper**2).sum() / tot) if tot > 0 else 0.0
 
 
-def apodize(aperture: Aperture, window: str | None, mode: str = "auto") -> Aperture:
+def apodize_aperture(aperture: Aperture, window: str | None,
+                     mode: str = "auto") -> Aperture:
     """Wrap ``aperture`` in a window, or hand it back unchanged for ``None``."""
     if window is None or str(window).lower() == "none":
         return aperture
@@ -456,7 +464,9 @@ class Combined(Aperture):
 # Sub-region tiling helpers: how several gratings share one illuminated region
 # --------------------------------------------------------------------------- #
 def tile_region(aperture: Aperture, n: int, mode: str = "stripes",
-                gap: float = 0.0) -> list[tuple[Aperture, tuple[float, float]]]:
+                gap: float = 0.0, apodize: str | None = None,
+                apodize_mode: str = "auto"
+                ) -> list[tuple[Aperture, tuple[float, float]]]:
     """Split one region into ``n`` spatially multiplexed sub-apertures.
 
     Returns ``[(sub_aperture, (dx, dy)), ...]`` offsets relative to the region
@@ -469,11 +479,20 @@ def tile_region(aperture: Aperture, n: int, mode: str = "stripes",
     ``rings``        concentric annuli
     ``interleave``   n interleaved fine stripe combs (each sub-grating sees the
                      whole region, at the cost of extra sampling noise)
+
+    ``apodize`` names a window from :data:`WINDOWS` to taper each sub-aperture's
+    amplitude to zero at its rim.  It is the other way to attack the scatter from
+    the phase discontinuity at a shared edge: ``gap`` removes the edge by leaving
+    dead space, apodization removes it by making the field vanish there instead.
+    They cost differently -- a gap shrinks the sub-aperture, a window keeps its
+    size but passes less light and widens the spot -- so they are alternatives to
+    compare, not a pair to stack by default.  See
+    :func:`fsphotonix.analysis.apodization_sweep`.
     """
     w, h = aperture.size
     out: list[tuple[Aperture, tuple[float, float]]] = []
     if n <= 1:
-        return [(aperture, (0.0, 0.0))]
+        return [(apodize_aperture(aperture, apodize, apodize_mode), (0.0, 0.0))]
 
     if mode == "stripes":
         sw = w / n
@@ -510,6 +529,8 @@ def tile_region(aperture: Aperture, n: int, mode: str = "stripes",
             out.append((sub, (0.0, 0.0)))
     else:
         raise ValueError(f"unknown tiling mode {mode!r}")
+    if apodize:
+        out = [(apodize_aperture(ap, apodize, apodize_mode), off) for ap, off in out]
     return out
 
 

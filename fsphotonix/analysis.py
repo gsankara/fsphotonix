@@ -275,3 +275,97 @@ def energy_check(fields_in: FieldSet, fields_out: FieldSet) -> dict:
     return {"in_W": a, "out_W": b,
             "ratio": b / a if a > 0 else np.nan,
             "loss_dB": 10 * np.log10(max(b, 1e-300) / max(a, 1e-300))}
+
+
+def apodization_report(modulator, z: float, wavelength: float | None = None) -> dict:
+    """What the sub-aperture window costs, before any light is propagated.
+
+    The companion to :func:`cgh_gap_report`, for the other way of suppressing the
+    scatter from a shared sub-aperture edge.  A guard gap removes the edge by
+    leaving dead space and shrinks the sub-aperture; an amplitude window removes
+    it by making the field vanish there, keeping the sub-aperture's size but
+    passing less light and broadening the spot.  Both end up fighting the
+    detector guard, so the two have to be compared on the same axes -- which is
+    what ``spot_vs_target_pitch`` before and after the window shows.
+
+    Geometric only.  For the number that actually matters, the cross-talk the
+    window buys, use :func:`apodization_sweep`, which propagates.
+    """
+    from .capacity import window_metrics
+
+    lam = wavelength or modulator.default_wavelength
+    g = modulator.gap_report(z=z, wavelength=lam)
+    window = g.get("apodization")
+    throughput, broadening = window_metrics(window)
+    spot = g["spot_size_um"] * 1e-6 * broadening
+    tp = (g["target_pitch_um"] * 1e-6 if g["target_pitch_um"] == g["target_pitch_um"]
+          else float("nan"))
+    return {
+        **g,
+        "apodization": window,
+        "power_throughput": throughput,
+        "apodization_loss_db": 10 * np.log10(max(throughput, 1e-300)),
+        "mainlobe_broadening": broadening,
+        "apodized_spot_size_um": spot * 1e6,
+        "spot_vs_target_pitch": spot / tp if tp == tp and tp > 0 else float("nan"),
+    }
+
+
+def apodization_sweep(build, windows=(None, "tukey", "hann", "blackman"),
+                      target_positions=None, leak_positions=None,
+                      radius: float = 0.0) -> dict:
+    """Measure what each window actually buys, by propagating light.
+
+    ``build(window) -> OpticalSystem`` is called once per entry in ``windows``;
+    the caller supplies the closure because only they know the layout being
+    studied.  The system is run, and the power landing within ``radius`` of
+    ``target_positions`` (the sites this input is meant to drive) is compared
+    with the power landing on ``leak_positions`` (lattice sites it is not), which
+    is the cross-talk a neighbouring channel would actually suffer.
+
+    **Use a wave propagator, not ``spot_mode``.**  ``docs/PHYSICS.md`` is explicit
+    that the beamlet kernel replaces the true aperture transform with a Gaussian
+    or sinc envelope, so it reproduces spot positions, powers and widths but not
+    the wings -- and the wings are the entire subject here.  A sweep built on
+    beamlets will report that apodization does nothing.
+
+    Returns one row per window with the throughput actually delivered, the
+    leaked power, their ratio in dB, and the measured spot width, so the
+    suppression and its price appear in the same table.
+    """
+    rows = []
+    for window in windows:
+        system = build(window)
+        trace = system.run()
+        fields = trace.final
+        r = radius or _default_radius(target_positions)
+        sig = spot_metrics(fields, target_positions, r)
+        leak = (spot_metrics(fields, leak_positions, r)
+                if leak_positions is not None and len(leak_positions) else None)
+        signal_w = float(np.sum(sig["power_W"]))
+        leak_w = float(np.sum(leak["power_W"])) if leak is not None else 0.0
+        rows.append({
+            "window": window or "none",
+            "signal_W": signal_w,
+            "leak_W": leak_w,
+            "crosstalk_db": 10 * np.log10(max(leak_w, 1e-300) / max(signal_w, 1e-300)),
+            "signal_uniformity": sig["uniformity"],
+            "delivered_fraction": sig["collected_fraction"],
+            "peak_irradiance": float(np.max(sig["peak_irradiance"])),
+        })
+    base = rows[0]
+    for row in rows:
+        row["throughput_vs_hard_db"] = 10 * np.log10(
+            max(row["signal_W"], 1e-300) / max(base["signal_W"], 1e-300))
+        row["crosstalk_suppression_db"] = base["crosstalk_db"] - row["crosstalk_db"]
+    return {"rows": rows, "windows": [r["window"] for r in rows]}
+
+
+def _default_radius(positions) -> float:
+    """Half the nearest-neighbour spacing, so the windows never overlap."""
+    p = np.asarray(positions, dtype=float).reshape(-1, 2)
+    if len(p) < 2:
+        return 1e-3
+    d = np.linalg.norm(p[:, None, :] - p[None, :, :], axis=-1)
+    np.fill_diagonal(d, np.inf)
+    return float(d.min()) * 0.4
