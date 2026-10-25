@@ -42,7 +42,14 @@ __version__ = "0.1.0"
 __license__ = "BSD-3-Clause"
 __author__ = "Ganesh Chennimalai Sankaran"
 
-from . import analysis, engine, registry, units, viz
+from . import analysis, capacity, engine, registry, units, viz
+from .capacity import (
+    CapacityReport,
+    FeatureModel,
+    Features,
+    ProblemSpec,
+    Requirements,
+)
 from .config import build_machine, build_system, load_file, load_text
 from .detectors import (
     CameraArray,
@@ -252,7 +259,8 @@ def build_cascade(source, modulators, detector, spacings, panel_grid: Grid | Non
 
 
 __all__ = [
-    "__version__", "engine", "registry", "units", "viz", "analysis",
+    "__version__", "engine", "registry", "units", "viz", "analysis", "capacity",
+    "ProblemSpec", "Features", "Requirements", "FeatureModel", "CapacityReport",
     "Grid", "sampling_report", "Channel", "FieldSet",
     "Waveform", "Constant", "Sinusoid", "Chirp", "Arbitrary", "Sampled", "NRZ", "PAM",
     "PulseTrain", "Burst", "Mixed", "Impaired",

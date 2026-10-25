@@ -171,6 +171,52 @@ Each of these is a coupling the code makes measurable rather than hiding.
 | electronic depth vs loop latency | `analog_path` / `digital_path(stages=)` | `Pipeline.latency`, `Machine.loop_report` |
 | cascade angle sensitivity | `incident=` / `incidence_from` | `transfer_matrix` vs the intended product |
 | WDM reuse of one hologram | wavelength list | `chromatic_walkoff` |
+| panel area vs achievable bit depth | `Features.routing`, `cgh_method` | `capacity.estimate`, `capacity.compare` |
+| spot size vs detector guard | `Requirements.spot_guard`, `apodization` | `CapacityReport.achievable_bits` |
+
+## Sizing a machine: `capacity.py`
+
+Every report above answers *"is this layout feasible?"*. `capacity.py` answers the
+inverse — *"given a problem instance, what hardware does it take?"* — and is the
+only module that derives geometry rather than checking it. The SLM comes out as a
+required pixel count and pitch, deliberately not restricted to a catalogue part.
+
+```python
+from fsphotonix.capacity import ProblemSpec, Requirements, Features, baseline, compare
+
+problem = ProblemSpec.from_graph(adjacency)          # or .from_matrix / .from_ising
+print(baseline(problem, Requirements(target_bits=4)).table())
+print(compare(problem, [Features(routing="multiplex", cgh_method="wgs")])["table"])
+```
+
+Two free parameters — the throw `z` and the detector pitch `out_pitch`, plus the
+guard fraction — fix everything else, and both pull against themselves, so the
+module searches rather than evaluates a formula. A small `out_pitch` keeps the
+screen and the deflection angle small but forces a *larger* sub-aperture; a large
+one shrinks the panel but demands a finer pitch to steer that far.
+
+A target bit depth is an error budget split between terms that geometry and
+features set (aperture leakage, phase quantisation, weight non-uniformity,
+off-support stray) and one bought with laser power. **When the static terms alone
+exceed the budget the design is infeasible at any power**, and the report says so
+and quotes the depth it can actually reach — which is the useful answer.
+
+Two results fall out, both in `examples/06_capacity.py`:
+
+* **Area division pays a factor of fan-out in panel area and phase multiplexing
+  does not** — one sub-aperture per target makes each region `sqrt(fan)` across,
+  while a multiplexed region is the sub-aperture itself. For a dense problem that
+  is a 10-50x difference in panel size.
+* **Whether that saving is usable is decided by the hologram synthesis, not by
+  the architecture.** A naive analytic superposition delivers its weights to
+  ~30% rms (under two bits); weighted Gerchberg-Saxton delivers them to 1-2% and
+  is *more* efficient. `measure=True` re-derives the coefficients by synthesising
+  the hologram at the design point instead of trusting the table.
+
+The sizing is cross-checked two ways: `CapacityReport.to_mvm(matrix=...)` hands
+the derived geometry to `OpticalMVM` so `check()` can confirm it, and the error
+model is pinned by test to land inside the 1-5% rms band that `PHYSICS.md` §8
+reports for the real optical matrix.
 
 ## Extension points
 

@@ -99,6 +99,14 @@ deflection still follows the grating equation.
 
 ![Custom plugin](docs/figures/05_custom_plugin.png)
 
+Sizing a machine from a problem instance rather than checking a layout: how the
+panel grows with fan-out under area division but not under phase multiplexing,
+what each architectural feature costs at a 4-bit target, and the measurement that
+decides whether multiplexing is usable at all — a naive analytic superposition
+delivers its weights to ~30% rms, weighted Gerchberg-Saxton to 1–2%.
+
+![Capacity estimation](docs/figures/06_capacity.png)
+
 Regenerate all of them with:
 
 ```bash
