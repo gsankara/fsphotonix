@@ -173,6 +173,8 @@ Each of these is a coupling the code makes measurable rather than hiding.
 | WDM reuse of one hologram | wavelength list | `chromatic_walkoff` |
 | panel area vs achievable bit depth | `Features.routing`, `cgh_method` | `capacity.estimate`, `capacity.compare` |
 | spot size vs detector guard | `Requirements.spot_guard`, `apodization` | `CapacityReport.achievable_bits` |
+| sub-aperture taper vs throughput | `route(apodize=)`, `Apodized(window=)`, `tile_region(apodize=)` | `apodization_report` (`power_throughput`, `apodization_loss_db`), `gap_report()["apodization"]` |
+| far-field wing suppression vs main-lobe width | choice of `WINDOWS` entry, `mode=` | `apodization_report` (`mainlobe_broadening`, `spot_vs_target_pitch`), `apodization_sweep` |
 
 ## Sizing a machine: `capacity.py`
 
@@ -217,6 +219,77 @@ The sizing is cross-checked two ways: `CapacityReport.to_mvm(matrix=...)` hands
 the derived geometry to `OpticalMVM` so `check()` can confirm it, and the error
 model is pinned by test to land inside the 1-5% rms band that `PHYSICS.md` §8
 reports for the real optical matrix.
+
+## Tapering a sub-aperture instead of guarding it
+
+A hard-edged sub-aperture has sinc far-field wings that fall only as `1/u²`. Across
+a lattice of simultaneously driven detectors that sets a cross-talk floor no guard
+band can escape: opening the gap wider shrinks the sub-aperture, and a smaller
+sub-aperture widens *every* spot as `λz/a`, so the cross-talk reappears at the
+detector instead. Tapering the sub-aperture's amplitude smoothly to zero at its rim
+replaces those wings with a much faster roll-off.
+
+This is apodization *versus* a guard gap, not a free improvement on it. Both remove
+the same thing — the phase discontinuity at the edge a sub-hologram shares with its
+neighbour. The gap removes it by leaving dead space, and pays in sub-aperture size.
+The window removes it by making the field vanish there, keeps the sub-aperture's
+size, and pays in transmitted power and a broader main lobe.
+
+```python
+from fsphotonix.modulators.geometry import WINDOWS, Apodized, apodize_aperture
+from fsphotonix.analysis import apodization_report, apodization_sweep
+
+modulator.route(region, targets, z=0.25, mode="subregions", apodize="hann")
+modulator.gap_report()["apodization"]          # the window actually in force
+apodization_report(modulator, z=0.25, wavelength=1.55e-6)
+```
+
+`Apodized(inner, window, mode)` wraps any aperture and tapers amplitude *without
+moving the support*, so apodized sub-apertures still tile their region exactly as
+hard-edged ones do. `mode` is `auto` / `separable` / `radial`, and `auto` picks
+radial for `Circle`, `Annulus` and `Sector`. `apodize_aperture` does the same for a
+loose aperture, `tile_region(apodize=)` for a whole tiling, and `route(apodize=)`
+for routing modes `subregions`, `multiplex` and `superpose` alike.
+
+`WINDOWS` — `none`, `tukey`, `hann`, `blackman`, each a function of a normalised
+coordinate `t ∈ [−1/2, 1/2]` — lives in `geometry.py` precisely so that
+`capacity.py` imports it rather than keeping a copy, which is what stops a window's
+predicted cost and its rendered optical effect from drifting apart. They had already
+drifted once: a 2-D separable aperture applies the window on *both* axes, so Hann
+passes `0.375² = 0.141` of the incident power, not the 1-D `0.375` the capacity
+model first assumed.
+
+`apodization_report(modulator, z, wavelength)` is the knob's geometric price —
+`power_throughput`, `apodization_loss_db`, `mainlobe_broadening`,
+`apodized_spot_size_um` and the resulting `spot_vs_target_pitch`.
+`apodization_sweep(build, windows, target_positions, leak_positions, radius)` is the
+measured answer: `build(window) -> OpticalSystem`, then propagate and compare the
+power landing on the sites an input is meant to drive against the power landing on
+sites it is not. For one input fanning to four sites of a 3×3 lattice, the other
+five belonging to a neighbouring channel:
+
+| window | cross-talk | suppression vs hard edge | throughput cost | 2-D power throughput | main-lobe broadening |
+|---|---|---|---|---|---|
+| `none` | −19.3 dB | — | 0 dB | 1.000 | 1.00 |
+| `tukey` | −45.5 dB | 26.1 dB | −2.94 dB | 0.476 | 1.03 |
+| `hann` | −56.7 dB | 37.3 dB | −8.16 dB | 0.141 | 1.62 |
+| `blackman` | −65.7 dB | 46.4 dB | −9.96 dB | 0.093 | 1.83 |
+
+**Tukey is the bargain** — 26 dB of suppression for 2.9 dB of light, because its
+flat centre preserves throughput while the taper still reaches zero at the rim. Hann
+buys 11 dB more for another 5 dB.
+
+This has to be measured with a **wave** propagator. `PHYSICS.md` §2 is explicit that
+the beamlet kernel replaces the true aperture transform with a Gaussian or sinc
+envelope: it reproduces spot positions, powers and widths but not the wings — and
+the wings are the whole subject here. A sweep built on beamlets reports that
+apodization does almost nothing.
+
+The render path was checked to preserve the taper rather than assumed to.
+`ModulatorArray.ideal_transmittance` divides the accumulated sub-aperture field by
+`maximum(wacc, 1.0)`; for non-overlapping tapers `wacc` stays below 1 near the
+edges, so the divisor stays 1 and the window survives. The rendered power ratio
+comes out at exactly the window's 2-D throughput.
 
 ## Extension points
 

@@ -107,6 +107,16 @@ delivers its weights to ~30% rms, weighted Gerchberg-Saxton to 1–2%.
 
 ![Capacity estimation](docs/figures/06_capacity.png)
 
+Tapering a sub-aperture's amplitude to zero at its rim instead of guarding it with
+dead space. A hard edge has sinc far-field wings falling only as 1/u², which across
+a lattice of driven detectors is a cross-talk floor no guard band escapes; a window
+replaces them with a far faster roll-off, paid for in light and in a wider spot.
+Measured through real propagation, Tukey is the bargain — 26 dB of cross-talk
+suppression for 2.9 dB of throughput, because its flat centre keeps the light while
+the taper still reaches zero.
+
+![Apodization](docs/figures/07_apodization.png)
+
 Regenerate all of them with:
 
 ```bash
