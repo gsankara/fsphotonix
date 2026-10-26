@@ -129,6 +129,7 @@ from .registry import available, create, describe, register
 from .solvers import (
     AnalogIterativeMachine,
     OpticalMVM,
+    ccg_wcsp_graph,
     cut_value,
     maxcut_ising,
     qubo_to_ising,
@@ -288,6 +289,7 @@ __all__ = [
     "digital_path", "Loop", "Machine", "History", "make_actuator", "local_loop",
     "global_loop",
     "OpticalMVM", "AnalogIterativeMachine", "maxcut_ising", "cut_value",
+    "ccg_wcsp_graph",
     "qubo_to_ising", "random_graph",
     "register", "create", "available", "describe",
     "build_system", "build_machine", "load_file", "load_text",

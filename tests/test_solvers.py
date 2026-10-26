@@ -7,6 +7,7 @@ from fsphotonix.solvers.aim import (
     AnalogIterativeMachine,
     OpticalMVM,
     brute_force_maxcut,
+    ccg_wcsp_graph,
     cut_value,
     maxcut_ising,
     qubo_to_ising,
@@ -159,3 +160,78 @@ def test_aim_records_states_when_asked():
     res = aim.solve(30, record_states=True)
     assert res.states.shape == (30, 6)
     assert res.summary()["iterations"] == 30
+
+
+# --------------------------------------------------------------------------- #
+# constraint composite graphs
+# --------------------------------------------------------------------------- #
+def test_ccg_structure_matches_a_real_reduced_instance():
+    """Anchored to a real file, not to the formula that generated it.
+
+    A 3-variable boolean WCSP reduced through CCG to MWVC to QUBO gives exactly
+    9 variables and 9 couplers, with each variable vertex of degree 3.
+    """
+    A = ccg_wcsp_graph(3)
+    assert A.shape == (9, 9)
+    assert int((A != 0).sum() // 2) == 9
+    degree = (A != 0).sum(axis=0)
+    assert degree[:3].max() == 3          # the three variable vertices
+
+
+@pytest.mark.parametrize("n", [1, 2, 3, 5, 8, 12])
+def test_ccg_counts_follow_the_construction(n):
+    """N = 2n + n(n-1)/2 vertices, E = n + n(n-1) edges, degree n."""
+    A = ccg_wcsp_graph(n)
+    assert A.shape[0] == 2 * n + n * (n - 1) // 2
+    assert int((A != 0).sum() // 2) == n + n * (n - 1)
+    assert (A != 0).sum(axis=0)[:n].max() == n
+
+
+def test_ccg_is_symmetric_with_no_self_loops():
+    A = ccg_wcsp_graph(6, seed=3)
+    assert np.allclose(A, A.T)
+    assert np.allclose(np.diag(A), 0.0)
+
+
+def test_ccg_auxiliary_vertices_have_the_degree_their_table_implies():
+    """One edge for a unary table's aux, two for a binary table's aux."""
+    n = 5
+    A = ccg_wcsp_graph(n)
+    degree = (A != 0).sum(axis=0)
+    assert set(degree[n:2 * n]) == {1}        # one aux per unary table
+    assert set(degree[2 * n:]) == {2}         # one aux per binary table
+
+
+def test_ccg_couplers_are_all_one_sign():
+    """The MWVC reduction gives Q_ij = min(w_i, w_j) + 1 > 0 for every edge.
+
+    So the Ising matrix is uniformly signed and needs no dual-rail *weights* --
+    a single global negation downstream does it, which halves the detectors.
+    """
+    A = ccg_wcsp_graph(7, seed=1)
+    nz = A[A != 0]
+    assert (nz > 0).all()
+    J, _ = maxcut_ising(A)
+    jn = J[J != 0]
+    assert (jn < 0).all()
+
+
+def test_ccg_accepts_a_sparser_interaction_graph():
+    """A chain of 4 variables has 3 binary tables, not 6."""
+    A = ccg_wcsp_graph(4, pairs=[(0, 1), (1, 2), (2, 3)])
+    assert A.shape[0] == 4 + 4 + 3
+    assert int((A != 0).sum() // 2) == 4 + 2 * 3
+
+
+def test_ccg_rejects_nonsense():
+    with pytest.raises(ValueError):
+        ccg_wcsp_graph(0)
+    with pytest.raises(ValueError):
+        ccg_wcsp_graph(3, pairs=[(0, 0)])
+    with pytest.raises(ValueError):
+        ccg_wcsp_graph(3, pairs=[(0, 9)])
+
+
+def test_ccg_is_deterministic_given_a_seed():
+    assert np.allclose(ccg_wcsp_graph(5, seed=4), ccg_wcsp_graph(5, seed=4))
+    assert not np.allclose(ccg_wcsp_graph(5, seed=4), ccg_wcsp_graph(5, seed=5))

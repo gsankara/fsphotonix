@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass, field
+from typing import Sequence
 
 import numpy as np
 
@@ -565,6 +566,69 @@ def random_graph(n: int = 16, density: float = 0.5, seed: int = 0,
         A = A * rng.uniform(0.2, 1.0, (n, n))
     A = np.triu(A, 1)
     return A + A.T
+
+
+def ccg_wcsp_graph(n_vars: int, seed: int = 0,
+                   coupler_range: tuple[float, float] = (1.1, 1.7),
+                   pairs: Sequence[tuple[int, int]] | None = None) -> np.ndarray:
+    """Adjacency of the constraint composite graph of a boolean WCSP.
+
+    A weighted constraint satisfaction problem is routinely solved by turning it
+    into a *constraint composite graph*, whose minimum-weight vertex cover has
+    the same optimum, and then into a QUBO.  That route is what decides how much
+    optics a WCSP needs, because the CCG -- not the WCSP -- is what the machine
+    has to hold.
+
+    The construction, for ``n_vars`` boolean variables with a unary table each
+    and a binary table per pair:
+
+    * one vertex per variable;
+    * one auxiliary vertex per unary table, joined to its variable by one edge;
+    * one auxiliary vertex per binary table, joined to *both* its variables.
+
+    So ``N = 2n + n(n-1)/2`` vertices and ``E = n + n(n-1)`` edges, and a
+    variable vertex has degree ``n`` -- which is the fan-out the holograms have
+    to deliver.  Pass ``pairs`` for a sparser interaction graph than all-pairs.
+
+    **The topology is exact; the weights are representative.**  Edge weights are
+    drawn from ``coupler_range``, the span a real MWVC-derived instance uses,
+    rather than reduced from actual cost tables, because the reduction's weight
+    assignment depends on how each table is decomposed.  Sizing depends on the
+    sparsity and the degree, both of which are exact here; it barely depends on
+    the weight values, which enter only through the column balance.
+
+    Note every coupler comes out one sign: ``Q_ij = min(w_i, w_j) + 1 > 0`` in
+    the MWVC reduction, so the resulting Ising matrix is uniformly signed and
+    needs no dual-rail *weights* -- one global negation downstream does it.
+    """
+    n = int(n_vars)
+    if n < 1:
+        raise ValueError("need at least one variable")
+    if pairs is None:
+        pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]
+    pairs = [tuple(sorted(map(int, p))) for p in pairs]
+    for i, j in pairs:
+        if not (0 <= i < n and 0 <= j < n) or i == j:
+            raise ValueError(f"bad variable pair {(i, j)}")
+
+    n_unary = n
+    size = n + n_unary + len(pairs)
+    rng = np.random.default_rng(seed)
+    lo, hi = coupler_range
+    A = np.zeros((size, size))
+
+    def _join(u: int, v: int) -> None:
+        w = float(rng.uniform(lo, hi))
+        A[u, v] = A[v, u] = w
+
+    for i in range(n):                       # unary tables: one edge each
+        _join(i, n + i)
+    aux = n + n_unary
+    for i, j in pairs:                       # binary tables: two edges each
+        _join(aux, i)
+        _join(aux, j)
+        aux += 1
+    return A
 
 
 def brute_force_maxcut(adjacency) -> tuple[float, np.ndarray]:

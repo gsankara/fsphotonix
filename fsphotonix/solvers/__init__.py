@@ -5,6 +5,7 @@ from .aim import (
     AnalogIterativeMachine,
     OpticalMVM,
     brute_force_maxcut,
+    ccg_wcsp_graph,
     cut_value,
     maxcut_ising,
     qubo_to_ising,
@@ -14,5 +15,6 @@ from .aim import (
 __all__ = [
     "OpticalMVM", "AnalogIterativeMachine", "AIMResult",
     "maxcut_ising", "cut_value", "qubo_to_ising", "random_graph",
+    "ccg_wcsp_graph",
     "brute_force_maxcut",
 ]
