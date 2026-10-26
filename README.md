@@ -181,7 +181,9 @@ A region with several sub-regions fans out by area division; a region with one
 
 *Geometries*: `rect`, `circle`, `ellipse`, `annulus`, `sector`, `hexagon`,
 `polygon`, `custom` bitmap, plus boolean combination and five sub-region tilings
-(`stripes`, `grid`, `sectors`, `rings`, `interleave`).
+(`stripes`, `grid`, `sectors`, `rings`, `interleave`).  Any of them can be wrapped
+in `apodized` (`none`, `tukey`, `hann`, `blackman`) to taper its amplitude to zero
+at the rim without moving its support — reachable as `route(..., apodize="hann")`.
 
 *Gratings*: `blazed` (period, orientation, blaze depth, quantisation levels),
 `binary_phase`, `ronchi` amplitude, `sinusoidal`, `crossed` 2-D, `dammann`
@@ -189,7 +191,12 @@ A region with several sub-regions fans out by area division; a region with one
 `fresnel_lens`, `spot_focuser` (off-axis focusing — "send this region's light to
 *that* point"), `axicon`, `zone_plate`, `multispot` CGH (superposition or
 weighted Gerchberg–Saxton), `phase_map` (load a hologram from a file),
-`superposition`, `cascade`, `apodizer`.
+`superposition`, `cascade`, `apodizer`.  The phase-multiplexing elements
+(`multispot`, `superposition`) *measure* what the projection to phase-only costs
+rather than assuming it free: `orders()` integrates the power actually reaching
+each designed direction, and `stray_fraction()`, `uniformity()` and `resolved()`
+report the intermodulation, the weight error and whether the aperture can even
+separate the targets.
 
 *Devices* (reflective **and** transmissive): `lcos`, `transmissive_lc`,
 `amplitude_slm`, `ipms_piston` (Fraunhofer-IPMS-style MEMS piston array),
@@ -246,6 +253,18 @@ annealed loop around it to minimise Ising/QUBO objectives — the AIM architectu
 `optics=None` gives the ideal-arithmetic control, so the difference between the two
 convergence curves is attributable entirely to the photonics.
 
+`fsphotonix.capacity` runs that backwards.  Instead of checking a layout you have
+already chosen, it takes a problem instance — `ProblemSpec.from_matrix`,
+`from_ising`, `from_graph` — and solves for the hardware: how many lasers, how many
+detectors, and an SLM pixel count *and pitch*, deliberately not restricted to a
+catalogue part.  `Features` toggles encoding, routing, CGH synthesis method,
+apodization and time multiplexing; `baseline()` is the conservative reference and
+`compare()` prices each variant against it.  A target bit depth is an error budget
+split between static terms and a noise term bought with laser power, so when the
+static terms alone exceed it the report says *infeasible at any power* and quotes
+the depth actually reachable.  `CapacityReport.to_mvm(matrix=...)` hands the derived
+geometry back to `OpticalMVM` so `check()` can confirm it.
+
 ## Design notes the simulator will make you confront
 
 These are not caveats about the model; they are properties of the architecture that
@@ -265,6 +284,26 @@ of one input*. The second costs aperture and therefore widens every screen spot 
 λz/a, so it cannot be increased indefinitely without re-introducing cross-talk at
 the *detector*. `analysis.cgh_gap_report` reports both, plus whether the resulting
 spot still fits inside the target pitch (`detector_guard_ok`).
+
+**Tapering the sub-aperture instead of guarding it.** A hard-edged sub-aperture
+has `sinc` far-field wings that fall only as 1/u², and across a lattice of
+simultaneously driven detectors that is a cross-talk floor no guard band escapes —
+widening the gap shrinks the sub-aperture and widens every spot in turn.
+`route(..., apodize=...)` tapers the amplitude to zero at the rim instead.
+Measured through propagation by `analysis.apodization_sweep`, Tukey buys 26 dB of
+cross-talk suppression for 2.9 dB of light and Hann 37 dB for 8.2 dB, so it is
+apodization *versus* a wider gap, not a free improvement on it.
+
+**What phase multiplexing costs.** One sub-region can carry N holograms at once by
+summing them and keeping only the phase, which stops the panel scaling with
+fan-out. The projection is lossy: about a quarter of the light goes to
+intermodulation and speckle. Which synthesis you use barely changes that, but it
+changes the *weights* by an order of magnitude — weighted Gerchberg–Saxton delivers
+them to a few percent rms where an analytic sum spreads them by tens — and in a
+matrix-vector product the weights are the answer. One caveat: GS can only place
+energy on its transform's lattice, spaced λz/a, so a target half a spot off it
+loses efficiency while the analytic sum, which sets targets by exact phase, does
+not.
 
 **Column normalisation of a diffractive matrix.** A hologram can only redistribute
 the light its region receives, so an area-multiplexed matrix is intrinsically
@@ -300,6 +339,7 @@ fsphotonix/
   detectors/      camera, photodiode, fiber
   system/         stages, optical_system, logic, feedback
   solvers/        aim (OpticalMVM, AnalogIterativeMachine)
+  capacity.py     size a machine from a problem instance (the inverse of check())
   analysis.py viz.py config.py cli.py
 examples/ configs/ tests/ docs/
 ```
@@ -310,7 +350,7 @@ examples/ configs/ tests/ docs/
 python -m pytest tests -q
 ```
 
-153 tests covering: chirp-z transform against a direct DFT; Gaussian-beam
+208 tests covering: chirp-z transform against a direct DFT; Gaussian-beam
 diffraction, slit nulls and focal spot size against closed form; energy
 conservation in every kernel; blazed-grating `sinc²(depth−m)` and quantisation
 laws; binary-phase 4/π², Ronchi and Bessel order efficiencies; Dammann uniformity;
@@ -318,9 +358,13 @@ device quantisation, stroke, fill factor and cross-talk; camera photon budget an
 shot-noise scaling; SMF direction/position selectivity and MMF NA acceptance;
 collimator inverse design and the illumination cross-talk trade; both hologram
 gaps; beamlet vs wave-optics agreement; WDM dispersion; loop period/delay/slew;
-optical matrix reproduction to <5% rms; cascade incidence pre-compensation; device steering-range aliasing; and
-Max-Cut solved through real light propagation to within 15% of the brute-force
-optimum.
+optical matrix reproduction to <5% rms; cascade incidence pre-compensation; device
+steering-range aliasing; Max-Cut solved through real light propagation to within
+15% of the brute-force optimum; apodization window throughput against the rendered
+aperture and the cross-talk it really buys; that a phase-only superposition reports
+losing power at all, and that measured orders stay disjoint and insensitive to
+sub-bin target placement; and that a sized design agrees with `OpticalMVM.check()`
+and lands inside the 1–5% rms accuracy band `docs/PHYSICS.md` reports.
 
 ## Background
 
