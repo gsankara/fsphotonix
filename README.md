@@ -117,6 +117,16 @@ the taper still reaches zero.
 
 ![Apodization](docs/figures/07_apodization.png)
 
+What phase multiplexing really costs. One sub-region can carry N holograms at once
+by summing them and keeping only the phase, which stops the panel scaling with
+fan-out — but the projection scatters power into intermodulation and speckle, and
+the code used to report that it lost nothing at all. Measured honestly, a
+random-phase superposition delivers about 0.75 of its light to the designed spots,
+and the choice of synthesis shows up in the *weights*: weighted Gerchberg-Saxton
+delivers them to a few percent where the analytic sum spreads them by tens.
+
+![Superposition](docs/figures/08_superposition.png)
+
 Regenerate all of them with:
 
 ```bash

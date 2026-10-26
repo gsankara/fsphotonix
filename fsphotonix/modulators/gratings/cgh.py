@@ -26,7 +26,8 @@ import numpy as np
 
 from ... import engine as eng
 from ...registry import register
-from .base import Grating, Order, carrier_frequency, target_to_angles
+from .base import (Grating, Order, carrier_frequency, measure_orders,
+                   target_to_angles)
 
 
 @register("grating", "phase_map", "raw")
@@ -227,30 +228,27 @@ class MultiSpotHologram(Grating):
         key = (round(lam, 18), int(samples))
         if key in cache:
             return cache[key]
-        n = int(samples)
-        w, h = self.aperture_size
-        x = (np.arange(n) - n // 2) * (w / n)
-        y = (np.arange(n) - n // 2) * (h / n)
-        X, Y = np.meshgrid(x, y)
-        t = eng.to_numpy(self.complex_transmittance(eng.asarray(X), eng.asarray(Y), lam))
-        far = np.fft.fftshift(np.fft.fft2(t))
-        total = float(np.sum(np.abs(far) ** 2))
-        fx_ax = np.fft.fftshift(np.fft.fftfreq(n, w / n))
-        fy_ax = np.fft.fftshift(np.fft.fftfreq(n, h / n))
-
-        out = []
-        half = 1  # +/- 1 bin window (a diffraction-limited spot)
-        for i, s in enumerate(self.spots):
+        dirs = []
+        for s in self.spots:
             tx, ty = target_to_angles(s.x, s.y, s.z)
-            fx, fy = carrier_frequency(tx, ty, lam)
-            ix = int(np.argmin(np.abs(fx_ax - fx)))
-            iy = int(np.argmin(np.abs(fy_ax - fy)))
-            sl = (slice(max(iy - half, 0), iy + half + 1), slice(max(ix - half, 0), ix + half + 1))
-            eta = float(np.sum(np.abs(far[sl]) ** 2) / total) if total > 0 else 0.0
-            out.append(Order(i, 0, float(fx_ax[ix]), float(fy_ax[iy]),
-                             eta * self.efficiency_scale))
+            dirs.append(carrier_frequency(tx, ty, lam))
+        got = measure_orders(self, self.aperture_size, dirs, lam, samples=int(samples))
+        out = [Order(i, 0, d[0], d[1], eta * self.efficiency_scale)
+               for i, (d, eta) in enumerate(zip(dirs, got["efficiency"]))]
+        self._last_measure = got
         cache[key] = out
         return out
+
+    def stray_fraction(self, wavelength: float | None = None,
+                       samples: int = 256) -> float:
+        """Power reaching no designed spot: intermodulation and speckle loss."""
+        self.orders(wavelength, samples=samples)
+        return float(self._last_measure["stray"])
+
+    def resolved(self, wavelength: float | None = None, samples: int = 256) -> bool:
+        """False when two targets sit closer than this aperture can separate."""
+        self.orders(wavelength, samples=samples)
+        return bool(self._last_measure["resolved"])
 
     def uniformity(self, wavelength: float | None = None) -> float:
         e = np.array([o.efficiency for o in self.orders(wavelength)])

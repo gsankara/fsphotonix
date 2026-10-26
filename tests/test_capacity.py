@@ -237,12 +237,22 @@ def test_optimised_cgh_synthesis_is_what_makes_multiplexing_usable():
     assert r_wgs.achievable_bits >= free.target_bits
 
 
-def test_unoptimised_superposition_is_the_worst_routing():
+def test_superpose_now_matches_the_analytic_cgh_and_both_lose_to_wgs():
+    """The Superposition grating used to be strictly the worst option.
+
+    It lacked randomised carrier phases, so every term was in phase at the
+    origin and the arg() projection threw away wildly different amounts of each.
+    Now that it draws them it measures identically to the analytic
+    ``superposition`` synthesis -- which is the whole point of the fix -- while
+    both still lose to an optimised projection.
+    """
     p = _problem(32)
     req = Requirements(target_bits=3.0)
     sup = estimate(p, req, Features(routing="superpose"))
     mux = estimate(p, req, Features(routing="multiplex", cgh_method="superposition"))
-    assert sup.achievable_bits < mux.achievable_bits
+    wgs = estimate(p, req, Features(routing="multiplex", cgh_method="wgs"))
+    assert sup.achievable_bits == pytest.approx(mux.achievable_bits, rel=1e-6)
+    assert wgs.achievable_bits > sup.achievable_bits
 
 
 # --------------------------------------------------------------------------- #

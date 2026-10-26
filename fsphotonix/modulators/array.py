@@ -309,7 +309,10 @@ class ModulatorArray:
 
             origin = r.center if absolute else (0.0, 0.0)
             gs = [_make_grating(grating, _rebase(t, origin), lam, **grating_kw) for t in tg]
+            # the measured orders are only meaningful on the aperture the
+            # hologram is actually written on, so hand it the region's size
             g = _compensate(Superposition(gratings=gs, weights=[t.weight for t in tg],
+                                          aperture_size=r.aperture.size,
                                           design_wavelength=lam), incident, lam)
             ap = (apodize_aperture(r.aperture, apodize, apodize_mode)
                   if apodize else None)

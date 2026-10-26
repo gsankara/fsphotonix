@@ -173,6 +173,7 @@ Each of these is a coupling the code makes measurable rather than hiding.
 | WDM reuse of one hologram | wavelength list | `chromatic_walkoff` |
 | panel area vs achievable bit depth | `Features.routing`, `cgh_method` | `capacity.estimate`, `capacity.compare` |
 | spot size vs detector guard | `Requirements.spot_guard`, `apodization` | `CapacityReport.achievable_bits` |
+| fan-out per hologram vs delivered weight accuracy | `route(mode=)`, `MultiSpotHologram.method` | `Superposition.uniformity`, `stray_fraction`, `resolved` |
 | sub-aperture taper vs throughput | `route(apodize=)`, `Apodized(window=)`, `tile_region(apodize=)` | `apodization_report` (`power_throughput`, `apodization_loss_db`), `gap_report()["apodization"]` |
 | far-field wing suppression vs main-lobe width | choice of `WINDOWS` entry, `mode=` | `apodization_report` (`mainlobe_broadening`, `spot_vs_target_pitch`), `apodization_sweep` |
 
@@ -290,6 +291,92 @@ The render path was checked to preserve the taper rather than assumed to.
 `maximum(wacc, 1.0)`; for non-overlapping tapers `wacc` stays below 1 near the
 edges, so the divisor stays 1 and the window survives. The rendered power ratio
 comes out at exactly the window's 2-D throughput.
+
+## Phase multiplexing, and what the projection costs
+
+One sub-region can carry N holograms at once: sum them and keep only the phase.
+`Superposition` composes arbitrary gratings that way, `MultiSpotHologram`
+synthesises the same thing from a target list, and `route(mode="superpose")` and
+`route(mode="multiplex")` reach them. It is the area-efficient alternative to
+area division — the panel stops scaling with fan-out — and the whole question is
+what the `arg()` projection costs.
+
+It is not free, and the code used to say it was. `Superposition.orders()`
+apportioned each constituent's *analytic* orders by its power share; since
+`SpotFocuser` reports unit efficiency, the shares summed to exactly 1.0 — a
+phase-only projection claiming to lose nothing to intermodulation, which is the
+one thing it certainly does lose. `orders()` now **measures**: it rasterises the
+hologram over `aperture_size`, transforms it, and integrates the power actually
+arriving at each constituent's direction. `stray_fraction()` is what reached no
+designed direction at all, `uniformity()` the rms spread of delivered against
+requested weights, and `resolved()` false when two targets sit closer than the
+aperture can separate.
+
+```python
+sp = Superposition(gratings=gs, aperture_size=(a, a))   # route() passes the real one
+sum(o.efficiency for o in sp.orders(lam))   # ~0.75, not 1.0
+sp.stray_fraction(lam), sp.uniformity(lam), sp.resolved(lam)
+```
+
+`orders()` comes back in **constituent order**, so entry *i* belongs to
+`gratings[i]` and lines up with `weights[i]`. The aperiodic branch used to sort
+by efficiency, which silently permuted that correspondence — a fan-out requested
+as 1:2:3:4 came back anti-correlated with what was asked for.
+
+**Random carrier phases are not a detail.** Without them every term peaks
+together at the origin, the sum has a huge peak-to-average ratio, and the
+projection discards wildly different amounts of each term. `Superposition` now
+draws them, seeded, exactly as `MultiSpotHologram` always did:
+
+| n | carrier | efficiency | stray | uniformity |
+|---|---|---|---|---|
+| 4 | aligned | 0.532 | 0.468 | 0.000 |
+| 4 | random | **0.739** | 0.261 | 0.007 |
+| 9 | aligned | 0.736 | 0.264 | 0.248 |
+| 9 | random | 0.748 | 0.252 | **0.209** |
+
+With that fixed, `Superposition` and `MultiSpotHologram(method="superposition")`
+measure identically, as two spellings of one hologram should.
+
+**Which synthesis, then.** For a matrix-vector product every target is an
+intended output, so the error is the spread in delivered weights rather than
+cross-talk, and that is where the optimiser earns its keep:
+
+| fan | `superposition` | `gs` | `wgs` |
+|---|---|---|---|
+| 9 | 0.748 / 0.209 | 0.797 / 0.049 | 0.795 / **0.028** |
+| 25 | 0.745 / 0.407 | 0.789 / 0.096 | 0.788 / **0.051** |
+
+(efficiency / rms weight non-uniformity). WGS wins on the weights by roughly an
+order of magnitude and barely at all on throughput — so prefer it for what it
+delivers, not for what it transmits.
+
+One limitation worth knowing rather than papering over: **Gerchberg-Saxton
+quantises target placement.** It can only put energy on its transform's lattice,
+spaced `1/aperture` — one spot width — so a target half a spot off that lattice
+is approximated and loses efficiency (0.763 on-lattice against 0.680 at a half
+-spot offset), while the analytic superposition places targets by exact phase and
+is flat against the same offset. Put targets on the lattice where the layout
+allows it.
+
+### Measuring orders at all
+
+`gratings.base.measure_orders` is shared by both classes, and two things make it
+trustworthy — both learned by getting them wrong first.
+
+*The transform is zero-padded.* An unpadded transform of an `a`-wide aperture has
+bins spaced exactly `1/a`, one spot width, **regardless of the sample count**,
+because more samples extend the frequency range rather than refine it. A
+direction landing halfway between bins then spreads across them and a one-bin
+window collects about half its power, so the measured efficiency swung by 2x with
+where targets happened to fall. Padding makes the bins finer than the spot, and
+the window is specified in spot widths.
+
+*Bins are assigned, not boxed.* Each bin goes to its nearest requested direction
+and is counted once, so efficiencies are disjoint by construction and cannot sum
+above one. A fixed box around each direction double-counts every bin two close
+directions share — which is how an order list came to report a total of 2.6 for a
+16-spot lattice.
 
 ## Extension points
 

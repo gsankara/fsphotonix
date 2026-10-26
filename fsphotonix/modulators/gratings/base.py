@@ -226,3 +226,83 @@ def as_grating(spec) -> Grating | None:
     if spec is None or isinstance(spec, Grating):
         return spec
     return build(spec, "grating")
+
+
+def measure_orders(grating, aperture_size: tuple[float, float],
+                   directions: Sequence[tuple[float, float]],
+                   wavelength: float, samples: int = 256,
+                   oversample: int = 4, window_spots: float = 1.0) -> dict:
+    """Measure what a phase-only hologram really delivers to each direction.
+
+    Rasterises ``grating`` over ``aperture_size``, transforms it, and integrates
+    the power landing near each requested ``(fx, fy)``.  Unlike an analytic order
+    list this sees what the projection to phase-only actually cost: the
+    intermodulation and speckle that the ``arg()`` of a sum scatters away from
+    the designed directions.
+
+    Two things make the result trustworthy, and both were learned the hard way.
+
+    **The transform is zero-padded.**  An unpadded transform of an ``a``-wide
+    aperture has bins spaced exactly ``1/a`` -- one spot width -- *regardless of
+    ``samples``*, since more samples extend the frequency range rather than
+    refine it.  A direction landing halfway between two bins then spreads its
+    energy across them (ordinary DFT scalloping) and a one-bin window collects
+    about half of it, so the measured efficiency swings with where the targets
+    happen to fall.  Padding by ``oversample`` makes the bins finer than the
+    spot, and the window is specified in *spot widths* rather than bins.
+
+    **Bins are assigned, not boxed.**  Each bin goes to its nearest requested
+    direction and is counted once, so the efficiencies are disjoint by
+    construction and cannot sum above one -- where a fixed box around each
+    direction double-counts every bin two close directions share, which is how
+    an order list comes to claim more power than the hologram was given.
+
+    Returns ``{"efficiency": [...], "stray": float, "resolved": bool,
+    "min_separation_spots": float}``.  ``resolved`` is false when two directions
+    sit closer than about two spot widths, where the aperture cannot separate
+    them: the total is still sound but their individual split is arbitrary.
+    """
+    n = int(samples)
+    w, h = aperture_size
+    x = (np.arange(n) - n // 2) * (w / n)
+    y = (np.arange(n) - n // 2) * (h / n)
+    X, Y = np.meshgrid(x, y)
+    t = eng.to_numpy(grating.complex_transmittance(eng.asarray(X), eng.asarray(Y),
+                                                   wavelength))
+    N = n * max(int(oversample), 1)
+    far = np.fft.fftshift(np.fft.fft2(np.asarray(t), s=(N, N)))
+    power = np.abs(far) ** 2
+    total = float(power.sum())
+    if total <= 0 or not len(directions):
+        return {"efficiency": [0.0] * len(directions), "stray": 1.0,
+                "resolved": True, "min_separation_spots": float("inf")}
+
+    fx_ax = np.fft.fftshift(np.fft.fftfreq(N, (w / n)))
+    fy_ax = np.fft.fftshift(np.fft.fftfreq(N, (h / n)))
+
+    # one spot width is 1/aperture in frequency; work in those units throughout
+    ux = (fx_ax[None, :] * w)
+    uy = (fy_ax[:, None] * h)
+
+    best = np.full((N, N), -1, dtype=int)
+    bestd = np.full((N, N), np.inf)
+    for k, (fx, fy) in enumerate(directions):
+        d = np.hypot(ux - fx * w, uy - fy * h)
+        closer = d < bestd
+        best = np.where(closer, k, best)
+        bestd = np.where(closer, d, bestd)
+    best = np.where(bestd <= window_spots + 1e-12, best, -1)
+
+    eff = [float(power[best == k].sum() / total) for k in range(len(directions))]
+
+    sep = float("inf")
+    if len(directions) > 1:
+        p = np.asarray([(fx * w, fy * h) for fx, fy in directions], dtype=float)
+        d = np.linalg.norm(p[:, None, :] - p[None, :, :], axis=-1)
+        np.fill_diagonal(d, np.inf)
+        sep = float(d.min())
+
+    return {"efficiency": eff,
+            "stray": float(max(1.0 - sum(eff), 0.0)),
+            "resolved": sep > 2.0 * window_spots,
+            "min_separation_spots": sep}

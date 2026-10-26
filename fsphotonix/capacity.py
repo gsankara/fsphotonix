@@ -418,17 +418,27 @@ def _crosstalk_ratio(name: str, sep_u: float, half_u: float,
 #: ``examples/06_capacity.py``, which reads them back out of
 #: :meth:`MultiSpotHologram.orders` over a range of fan-outs.
 #:
-#: The spread between the rows is the single most consequential number in this
-#: module. A naive analytic superposition delivers its weights to about 30% rms,
-#: which is barely 1.7 bits and is what makes phase multiplexing look unusable;
-#: weighted Gerchberg-Saxton delivers them to 1-2% *and* is more efficient,
-#: which is what makes the 10-50x panel saving real. Choosing to multiplex is
-#: therefore not really a choice about area -- it is a choice about whether the
-#: hologram is optimised.
+#: The uniformity column is the single most consequential number in this module.
+#: A naive analytic superposition delivers its weights to about 30% rms, barely
+#: 1.7 bits, which is what makes phase multiplexing look unusable; weighted
+#: Gerchberg-Saxton delivers them to 4%. Choosing to multiplex is therefore not
+#: really a choice about area -- it is a choice about whether the hologram is
+#: optimised.
+#:
+#: The efficiency column is near-flat across the three, and that is a correction
+#: to an earlier, over-flattering reading of it. Measured honestly (disjoint,
+#: zero-padded windows: see ``gratings.base.measure_orders``) all three land
+#: around 0.75-0.79, and GS/WGS can fall *below* the analytic sum when targets
+#: are off-lattice: GS places energy only on the ``1/aperture`` grid, one spot
+#: width, so a target half a spot off it loses about 8 points of efficiency in
+#: one axis and more in two, while the analytic superposition places targets
+#: continuously by exact phase and is flat against offset. Prefer WGS for the
+#: weights it delivers, not for its throughput, and put targets on the lattice
+#: where the layout allows it.
 CGH_METHODS: dict[str, tuple[float, float]] = {
-    "superposition": (0.82, 0.150),
-    "gs": (0.91, 0.035),
-    "wgs": (0.91, 0.008),
+    "superposition": (0.75, 0.300),
+    "gs": (0.79, 0.070),
+    "wgs": (0.79, 0.040),
 }
 
 
@@ -450,11 +460,13 @@ class FeatureModel:
     #: single-spot hologram's efficiency with deflection angle, not a fan-out
     #: effect)
     subregion_uniformity: float = 0.07
-    #: an unoptimised complex superposition (the ``Superposition`` grating) has
-    #: neither randomised carrier phases nor an optimiser, so it sits below even
-    #: the analytic ``superposition`` row of CGH_METHODS
-    superpose_efficiency_penalty: float = 0.85
-    superpose_uniformity_penalty: float = 1.5
+    #: The ``Superposition`` grating used to lack randomised carrier phases, so it
+    #: sat below even the analytic ``superposition`` row of CGH_METHODS. It now
+    #: draws them, and measures identically to that row -- hence 1.0. Kept as a
+    #: knob because a constituent set that is not a plain spot fan-out can still
+    #: project worse than the measured reference.
+    superpose_efficiency_penalty: float = 1.0
+    superpose_uniformity_penalty: float = 1.0
     #: Fraction of the weight non-uniformity that survives calibration.
     #: ``OpticalMVM.calibrate("rail")`` fits one gain per output, which takes out
     #: the part of the spread that is common to an output row and leaves the
