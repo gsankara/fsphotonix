@@ -330,10 +330,13 @@ draws them, seeded, exactly as `MultiSpotHologram` always did:
 
 | n | carrier | efficiency | stray | uniformity |
 |---|---|---|---|---|
-| 4 | aligned | 0.532 | 0.468 | 0.000 |
-| 4 | random | **0.739** | 0.261 | 0.007 |
+| 4 | aligned | 0.540 | 0.460 | 0.001 |
+| 4 | random | **0.753** | 0.247 | 0.026 |
 | 9 | aligned | 0.736 | 0.264 | 0.248 |
 | 9 | random | 0.748 | 0.252 | **0.209** |
+
+(targets on a lattice at three spot widths; `examples/08_superposition.py`
+reproduces every number here.)
 
 With that fixed, `Superposition` and `MultiSpotHologram(method="superposition")`
 measure identically, as two spellings of one hologram should.
@@ -354,10 +357,18 @@ delivers, not for what it transmits.
 One limitation worth knowing rather than papering over: **Gerchberg-Saxton
 quantises target placement.** It can only put energy on its transform's lattice,
 spaced `1/aperture` — one spot width — so a target half a spot off that lattice
-is approximated and loses efficiency (0.763 on-lattice against 0.680 at a half
--spot offset), while the analytic superposition places targets by exact phase and
-is flat against the same offset. Put targets on the lattice where the layout
-allows it.
+is approximated and loses efficiency -- 0.795 on-lattice against 0.690 half a
+spot off it -- while the analytic superposition sets its targets by exact phase
+and stays within 0.006 across the same sweep. Put targets on the lattice where
+the layout allows it.
+
+This is easy to trip over by accident. A near-square block of `n` targets centred
+on its own *centroid* puts every target at a half-integer multiple of the pitch
+whenever `ceil(sqrt(n))` is even -- exactly half a spot off the lattice -- so a
+fan-out sweep over 4, 9, 16, 25 shows GS efficiency alternating by a quarter and
+looks like a fan-out effect when it is really an alignment one. Centring the
+block on a *site* instead leaves odd counts untouched and brings the even ones
+back onto the lattice.
 
 ### Measuring orders at all
 
