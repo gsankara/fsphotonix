@@ -221,6 +221,29 @@ the derived geometry to `OpticalMVM` so `check()` can confirm it, and the error
 model is pinned by test to land inside the 1-5% rms band that `PHYSICS.md` §8
 reports for the real optical matrix.
 
+`CapacityReport.components()` itemises the answer stage by stage -- emitters and
+their power, a collimating lenslet per emitter with the pitch the region layout
+demands, the SLM as rows x columns of pixels at a derived pitch, how many
+holograms and how many pixels each one is written on, the detector grid, and the
+features in force at each stage. The panel is *not* forced square: 18 rails tile
+as 5x4, and a 2:1 panel is a different piece of glass from a square one with the
+same pixel count.
+
+Problems arrive as a matrix, an Ising coupling matrix, a graph, or a `.qubo`
+file -- `read_qubo` parses the usual DIMACS-style layout and
+`ProblemSpec.from_qubo_file` sizes the Ising problem the optics would actually
+run, since `h` is applied electronically and costs no optics.
+
+One check is kept deliberately apart from the error budget. `Features.validate`
+asks whether a feature set can represent the problem *at all*: light is
+non-negative, so `encoding="unsigned"` against signed weights is not an
+inaccurate machine but a machine computing a different function, and the report
+says `binding="encoding_mismatch"` rather than quietly sizing something cheaper.
+The sign never lives in the hologram -- a CGH can hold a negative amplitude as a
+π phase shift, but the detector is square-law and destroys it, so the hologram
+carries `|W|` as a power share (`weight_mode`) and the sign lives in which rail
+the light lands on.
+
 ## Tapering a sub-aperture instead of guarding it
 
 A hard-edged sub-aperture has sinc far-field wings that fall only as `1/u²`. Across

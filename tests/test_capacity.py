@@ -14,6 +14,7 @@ import pytest
 
 from fsphotonix.capacity import (
     CGH_METHODS,
+    read_qubo,
     Features,
     FeatureModel,
     ProblemSpec,
@@ -368,3 +369,125 @@ def test_rejected_feature_names_fail_loudly():
         Features(encoding="trinary")
     with pytest.raises(ValueError):
         FeatureModel().window("gaussian_ish")
+
+
+# --------------------------------------------------------------------------- #
+# reading a .qubo instance
+# --------------------------------------------------------------------------- #
+QUBO_TEXT = """c a comment line
+p qubo 0 3 3 2
+0 0 -0.7
+1 1 -1.2
+2 2 -2.1
+0 1 1.5
+1 2 1.4
+"""
+
+
+def _write_qubo(tmp_path):
+    f = tmp_path / "problem.qubo"
+    f.write_text(QUBO_TEXT, encoding="utf-8")
+    return f
+
+
+def test_read_qubo_parses_the_dimacs_layout(tmp_path):
+    Q = read_qubo(_write_qubo(tmp_path))
+    assert Q.shape == (3, 3)
+    assert np.diag(Q) == pytest.approx([-0.7, -1.2, -2.1])
+    assert Q[0, 1] == pytest.approx(1.5)
+    assert Q[1, 2] == pytest.approx(1.4)
+    assert Q[0, 2] == 0.0          # absent couplers stay zero
+    assert Q[1, 0] == 0.0          # upper triangular, not symmetrised
+
+
+def test_read_qubo_rejects_malformed_input(tmp_path):
+    cases = [
+        ["0 0 -0.7"],                    # no "p qubo" header
+        ["p qubo 0 2 2 1", "0 0"],       # a line that is not i j value
+        ["p qubo 0 2 2 1", "0 5 1.0"],   # an index outside 0..n-1
+    ]
+    for lines in cases:
+        f = tmp_path / "bad.qubo"
+        f.write_text('\n'.join(lines) + '\n', encoding="utf-8")
+        with pytest.raises(ValueError):
+            read_qubo(f)
+
+
+def test_problem_spec_from_a_qubo_file_sizes_the_ising_problem(tmp_path):
+    """The optics computes J.s, so the spec must describe J, not Q."""
+    spec = ProblemSpec.from_qubo_file(_write_qubo(tmp_path), iterations=100)
+    assert spec.n_in == spec.n_out == 3
+    assert spec.iterations == 100
+    # J = -Qo/2 keeps the coupler sparsity and drops the diagonal
+    assert spec.max_fanout == 2        # variable 1 couples to both 0 and 2
+    assert spec.nnz == 4               # two couplers, symmetrised
+
+
+def test_qubo_round_trips_through_the_matrix_form(tmp_path):
+    Q = read_qubo(_write_qubo(tmp_path))
+    assert (ProblemSpec.from_qubo(Q).summary()
+            == ProblemSpec.from_qubo_file(_write_qubo(tmp_path),
+                                          label="qubo").summary())
+
+
+# --------------------------------------------------------------------------- #
+# a feature set that cannot represent the problem at all
+# --------------------------------------------------------------------------- #
+def test_unsigned_encoding_is_refused_for_a_signed_problem():
+    """Not an accuracy problem: it computes a different function.
+
+    Light is non-negative, so a single rail cannot carry a signed weight. The
+    report has to say so rather than quietly sizing a cheaper machine.
+    """
+    p = ProblemSpec.from_matrix(np.array([[1.0, -1.0], [0.5, 1.0]]))
+    rep = estimate(p, Requirements(target_bits=3.0), Features(encoding="unsigned"))
+    assert not rep.feasible
+    assert rep.binding == "encoding_mismatch"
+    assert any("cannot represent" in n for n in rep.notes)
+
+
+def test_unsigned_encoding_is_fine_for_a_non_negative_problem():
+    p = ProblemSpec.from_matrix(np.array([[1.0, 0.0], [0.5, 1.0]]),
+                                signed_input=False)
+    rep = estimate(p, Requirements(target_bits=3.0), Features(encoding="unsigned"))
+    assert Features(encoding="unsigned").validate(p) == []
+    assert rep.binding != "encoding_mismatch"
+
+
+# --------------------------------------------------------------------------- #
+# the bill of materials
+# --------------------------------------------------------------------------- #
+def test_bill_of_materials_counts_every_stage():
+    rep = baseline(_problem(16), Requirements(target_bits=3.0))
+    bom = rep.bill_of_materials()
+    assert set(bom) == {"source", "illumination", "modulator", "propagation",
+                        "detection", "electronics"}
+    counts = {name: n for items in bom.values() for name, n, _ in items}
+    assert counts["laser / emitter"] == rep.lasers
+    assert counts["collimating lenslet"] == rep.lasers      # one per emitter
+    assert counts["detector element"] == rep.detectors
+    assert counts["illuminated region"] == rep.regions
+    assert counts["hologram (CGH)"] == rep.regions * rep.subregions_per_region
+    assert counts["SLM panel"] == 1
+    assert "components:" in rep.components()
+
+
+def test_per_cgh_pixels_are_consistent_with_the_panel():
+    """A hologram's pixels must fit its region, and regions must fit the panel."""
+    rep = baseline(_problem(16), Requirements(target_bits=3.0))
+    assert rep.pixels_per_cgh > 0
+    assert rep.pixels_per_cgh <= rep.pixels_per_region
+    assert rep.cgh_count == rep.regions * rep.subregions_per_region
+    # the panel holds every region, with the guard gap on top
+    assert rep.slm_pixels_x * rep.slm_pitch >= rep.panel_cols * rep.region_size
+    assert rep.slm_pixels_y * rep.slm_pitch >= rep.panel_rows * rep.region_size
+    assert rep.slm_pixels == rep.slm_pixels_x * rep.slm_pixels_y
+
+
+def test_the_panel_is_not_forced_square():
+    """18 rails tile as 5x4, not 5x5: a 2:1 panel is different glass."""
+    p = ProblemSpec.from_matrix(np.ones((9, 9)) - np.eye(9))
+    rep = baseline(p, Requirements(target_bits=3.0))
+    assert rep.panel_cols * rep.panel_rows >= rep.regions
+    assert (rep.panel_cols - 1) * rep.panel_rows < rep.regions
+    assert rep.slm_pixels_y < rep.slm_pixels_x

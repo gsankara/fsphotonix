@@ -263,7 +263,15 @@ apodization and time multiplexing; `baseline()` is the conservative reference an
 split between static terms and a noise term bought with laser power, so when the
 static terms alone exceed it the report says *infeasible at any power* and quotes
 the depth actually reachable.  `CapacityReport.to_mvm(matrix=...)` hands the derived
-geometry back to `OpticalMVM` so `check()` can confirm it.
+geometry back to `OpticalMVM` so `check()` can confirm it, and `components()`
+itemises the result stage by stage: emitters and their power, a collimating
+lenslet per emitter, the SLM as rows x columns at a derived pitch, how many
+holograms and how many pixels each is written on, and the detector grid.
+Problems arrive as a matrix, an Ising coupling matrix, a graph, or a `.qubo`
+file.  `Features.validate` refuses a feature set that cannot represent the
+problem at all -- light is non-negative, so an unsigned encoding against signed
+weights is reported as `encoding_mismatch` rather than sized as a cheaper
+machine.
 
 ## Design notes the simulator will make you confront
 
@@ -350,7 +358,7 @@ examples/ configs/ tests/ docs/
 python -m pytest tests -q
 ```
 
-208 tests covering: chirp-z transform against a direct DFT; Gaussian-beam
+217 tests covering: chirp-z transform against a direct DFT; Gaussian-beam
 diffraction, slit nulls and focal spot size against closed form; energy
 conservation in every kernel; blazed-grating `sinc²(depth−m)` and quantisation
 laws; binary-phase 4/π², Ronchi and Bessel order efficiencies; Dammann uniformity;
@@ -364,7 +372,10 @@ steering-range aliasing; Max-Cut solved through real light propagation to within
 aperture and the cross-talk it really buys; that a phase-only superposition reports
 losing power at all, and that measured orders stay disjoint and insensitive to
 sub-bin target placement; and that a sized design agrees with `OpticalMVM.check()`
-and lands inside the 1–5% rms accuracy band `docs/PHYSICS.md` reports.
+and lands inside the 1–5% rms accuracy band `docs/PHYSICS.md` reports; and that
+a `.qubo` file parses, that a feature set which cannot represent its problem is
+refused rather than sized, and that the per-hologram pixel counts are consistent
+with the regions and the panel that hold them.
 
 ## Background
 

@@ -90,12 +90,53 @@ __all__ = [
     "compare",
     "measure_routing",
     "window_metrics",
+    "read_qubo",
 ]
 
 
 # --------------------------------------------------------------------------- #
 # the problem instance
 # --------------------------------------------------------------------------- #
+def read_qubo(path) -> np.ndarray:
+    """Read a ``.qubo`` file into a dense upper-triangular ``Q``.
+
+    The format is the usual one::
+
+        c any comment
+        p qubo 0 n n m
+        i i value      one line per variable  (the diagonal, Q_ii)
+        i j value      one line per coupler   (i < j, Q_ij)
+
+    with ``H(x) = sum_i Q_ii x_i + sum_{i<j} Q_ij x_i x_j`` over x in {0, 1}.
+    Only the entries present are set; everything else stays zero.
+    """
+    n = None
+    entries: list[tuple[int, int, float]] = []
+    with open(path, "r", encoding="utf-8") as fh:
+        for lineno, raw in enumerate(fh, 1):
+            line = raw.strip()
+            if not line or line.startswith("c"):
+                continue
+            if line.startswith("p"):
+                parts = line.split()
+                if len(parts) < 4 or parts[1] != "qubo":
+                    raise ValueError(f"{path}:{lineno}: bad header {line!r}")
+                n = int(parts[3])
+                continue
+            parts = line.split()
+            if len(parts) != 3:
+                raise ValueError(f"{path}:{lineno}: expected 'i j value', got {line!r}")
+            entries.append((int(parts[0]), int(parts[1]), float(parts[2])))
+    if n is None:
+        raise ValueError(f"{path}: no 'p qubo' header line")
+    Q = np.zeros((n, n))
+    for i, j, v in entries:
+        if not (0 <= i < n and 0 <= j < n):
+            raise ValueError(f"{path}: index ({i}, {j}) outside 0..{n - 1}")
+        Q[i, j] = v
+    return Q
+
+
 @dataclass(frozen=True)
 class ProblemSpec:
     """What the optics has to compute, stripped to the numbers that size it.
@@ -156,6 +197,36 @@ class ProblemSpec:
             raise ValueError("J must be square")
         spec = cls.from_matrix(J, iterations=iterations, label=label)
         return replace(spec, label=label, iterations=iterations)
+
+    @classmethod
+    def from_qubo(cls, Q, iterations: int = 300, label: str = "qubo") -> "ProblemSpec":
+        """Size from a QUBO matrix ``H(x) = x^T Q x`` over x in {0, 1}.
+
+        The optics computes ``J s`` each iteration, so the machine is sized from
+        the Ising coupling matrix, not from ``Q`` directly. The linear field
+        ``h`` falls out of the same conversion and is applied electronically in
+        the feedback path -- it costs no optics and so does not appear here.
+        """
+        from .solvers.aim import qubo_to_ising
+
+        J, _h, _offset = qubo_to_ising(np.asarray(Q, dtype=float))
+        return cls.from_ising(J, iterations=iterations, label=label)
+
+    @classmethod
+    def from_qubo_file(cls, path, iterations: int = 300,
+                       label: str | None = None) -> "ProblemSpec":
+        """Size from a ``.qubo`` file in the usual DIMACS-style layout.
+
+        ``p qubo 0 n n m`` then one ``i i value`` line per variable and one
+        ``i j value`` line per coupler, ``c`` for comments. Returns the spec for
+        the Ising problem the optics would actually run; use :func:`read_qubo`
+        if you want ``Q`` itself.
+        """
+        import os
+
+        Q = read_qubo(path)
+        return cls.from_qubo(Q, iterations=iterations,
+                             label=label or os.path.basename(str(path)))
 
     @classmethod
     def from_graph(cls, adjacency, iterations: int = 300,
@@ -236,6 +307,27 @@ class Features:
         if self.time_multiplex > 1:
             bits.append(f"tdm={self.time_multiplex}")
         return "+".join(bits)
+
+    def validate(self, problem: "ProblemSpec") -> list[str]:
+        """Reasons this feature set cannot represent ``problem`` at all.
+
+        Separate from the error budget on purpose. A design that is merely
+        inaccurate still computes the right function badly; one that cannot
+        encode the sign of a weight computes a different function, and no amount
+        of laser power or panel area repairs that.
+        """
+        bad = []
+        if self.encoding == "unsigned":
+            if problem.signed_weights:
+                bad.append(
+                    "encoding='unsigned' cannot represent this problem: its "
+                    "weights are signed, and light is non-negative. Use "
+                    "'dual_rail', or pre-condition the matrix.")
+            if problem.signed_input:
+                bad.append(
+                    "encoding='unsigned' drops the input rail, but this "
+                    "problem's inputs are signed.")
+        return bad
 
     @classmethod
     def baseline(cls) -> "Features":
@@ -655,8 +747,20 @@ class CapacityReport:
     subregions_per_region: int
     slm_pixels: int
     slm_pixels_x: int
+    slm_pixels_y: int
     slm_extent: float
+    slm_extent_x: float
+    slm_extent_y: float
     slm_pitch: float
+    panel_cols: int
+    panel_rows: int
+    screen_cols: int
+    screen_rows: int
+    screen_extent_x: float
+    screen_extent_y: float
+    region_pitch: float
+    subaperture_px: float
+    region_px: float
     # geometry
     z: float
     out_pitch: float
@@ -730,9 +834,9 @@ class CapacityReport:
             f"  {ok}; binding constraint: {self.binding}",
             f"  lasers {self.lasers}   detectors {self.detectors}   "
             f"regions {self.regions} x {self.subregions_per_region} subregions",
-            f"  SLM    {self.slm_pixels_x} x {self.slm_pixels_x} px "
+            f"  SLM    {self.slm_pixels_x} x {self.slm_pixels_y} px "
             f"({self.megapixels:.2f} Mpx) at {self.slm_pitch*1e6:.2f} um pitch "
-            f"= {self.slm_extent*1e3:.2f} mm across",
+            f"= {self.slm_extent_x*1e3:.2f} x {self.slm_extent_y*1e3:.2f} mm",
             f"  throw  z = {self.z*1e3:.1f} mm; screen {self.screen_extent*1e3:.2f} mm "
             f"at {self.out_pitch*1e6:.0f} um pitch",
             f"  optics sub-aperture {self.subaperture*1e6:.1f} um -> spot "
@@ -758,6 +862,116 @@ class CapacityReport:
 
     def __str__(self) -> str:  # pragma: no cover - cosmetic
         return self.table()
+
+    # ---- bill of materials ------------------------------------------------ #
+    @property
+    def cgh_count(self) -> int:
+        """Distinct holograms on the panel: one per sub-region, per region."""
+        return self.regions * self.subregions_per_region
+
+    @property
+    def pixels_per_cgh(self) -> int:
+        """Device pixels one hologram is written on."""
+        return int(max(self.subaperture_px, 0.0) ** 2)
+
+    @property
+    def pixels_per_region(self) -> int:
+        return int(max(self.region_px, 0.0) ** 2)
+
+    def bill_of_materials(self) -> dict:
+        """Component counts and sizes, stage by stage.
+
+        What `table()` summarises, itemised: what you would have to buy or
+        fabricate, and which modelled feature each stage is exercising. Counts
+        are per machine, and every length is in metres (the ``components()``
+        renderer converts for reading).
+
+        The collimator row is a lenslet per emitter. :class:`OpticalMVM` builds
+        the illumination as a profiled :class:`LaserArray` rather than explicit
+        lenslets, so this row is a sizing statement rather than something the
+        engine instantiates -- it is what the panel's region pitch demands of
+        whatever optic actually delivers the light.
+        """
+        req, feat = self.requirements, self.features
+        dual = feat.encoding == "dual_rail"
+        return {
+            "source": [
+                ("laser / emitter", self.lasers,
+                 f"{self.power_per_input*1e3:.3g} mW each at "
+                 f"{req.wavelength*1e9:.0f} nm"),
+                ("input rails", self.lasers,
+                 "dual rail (x+ and x-)" if dual else "unsigned, single rail"),
+            ],
+            "illumination": [
+                ("collimating lenslet", self.lasers,
+                 f"pitch {self.region_pitch*1e6:.1f} um, clear aperture "
+                 f">= {self.region_size*1e6:.1f} um"),
+                ("lenslet array", 1,
+                 f"{self.panel_cols} x {self.panel_rows} on the panel grid"),
+            ],
+            "modulator": [
+                ("SLM panel", 1,
+                 f"{self.slm_pixels_x} x {self.slm_pixels_y} px "
+                 f"({self.megapixels:.2f} Mpx) at {self.slm_pitch*1e6:.2f} um "
+                 f"= {self.slm_extent_x*1e3:.2f} x {self.slm_extent_y*1e3:.2f} mm"),
+                ("illuminated region", self.regions,
+                 f"{self.panel_cols} x {self.panel_rows} grid, "
+                 f"{self.region_size*1e6:.1f} um wide, "
+                 f"{self.pixels_per_region} px each"),
+                ("hologram (CGH)", self.cgh_count,
+                 f"{self.subregions_per_region} per region, "
+                 f"{self.subaperture_px:.0f} x {self.subaperture_px:.0f} px "
+                 f"= {self.pixels_per_cgh} px each"),
+                ("routing", "-",
+                 f"{feat.routing}"
+                 + (f" / {feat.cgh_method}" if feat.routing == "multiplex" else "")),
+                ("sub-aperture window", "-", feat.apodization or "none (hard edge)"),
+            ],
+            "propagation": [
+                ("free-space throw", 1, f"z = {self.z*1e3:.1f} mm"),
+                ("steering demand", "-",
+                 f"{math.degrees(self.deflection_needed):.2f} deg needed, "
+                 f"{math.degrees(self.deflection_available):.2f} deg available "
+                 f"at {self.slm_pitch*1e6:.2f} um pitch"),
+            ],
+            "detection": [
+                ("detector element", self.detectors,
+                 f"{self.screen_cols} x {self.screen_rows} grid at "
+                 f"{self.out_pitch*1e6:.0f} um pitch, "
+                 f"{req.detector_active_frac*self.out_pitch*1e6:.0f} um active"),
+                ("output rails", self.detectors,
+                 "dual rail (y+ and y-), subtracted" if dual else "unsigned"),
+                ("screen", 1,
+                 f"{self.screen_extent_x*1e3:.1f} x "
+                 f"{self.screen_extent_y*1e3:.1f} mm, "
+                 f"spot {self.spot_size*1e6:.0f} um "
+                 f"({self.spot_size/self.out_pitch:.2f} x pitch)"),
+            ],
+            "electronics": [
+                ("update rate", "-", f"{self.update_rate:.3g} Hz"
+                 + (f" (time-multiplexed x{feat.time_multiplex})"
+                    if feat.time_multiplex > 1 else "")),
+                ("effective depth", "-",
+                 f"{self.achievable_bits:.1f} bits achievable, "
+                 f"{req.target_bits:.1f} requested"),
+                ("iterations", self.problem.iterations or "-",
+                 (f"time to solution {self.time_to_solution*1e3:.1f} ms"
+                  if self.time_to_solution is not None else "single pass")),
+            ],
+        }
+
+    def components(self) -> str:
+        """Render :meth:`bill_of_materials` as a readable block."""
+        bom = self.bill_of_materials()
+        lines = [f"components: {self.problem.label} "
+                 f"{self.problem.n_out}x{self.problem.n_in} [{self.features.tag}]",
+                 f"  {'stage':<13}{'component':<22}{'count':>8}  detail"]
+        lines.append("  " + "-" * 76)
+        for stage, items in bom.items():
+            for k, (name, count, detail) in enumerate(items):
+                lines.append(f"  {stage if k == 0 else '':<13}{name:<22}"
+                             f"{str(count):>8}  {detail}")
+        return '\n'.join(lines)
 
     def to_mvm(self, matrix=None, **kw):
         """Instantiate the :class:`OpticalMVM` this report describes.
@@ -855,10 +1069,18 @@ def _evaluate(problem: ProblemSpec, req: Requirements, features: Features,
     a = broadening * req.wavelength * z / (guard * out_pitch)
     region = a if features.multiplexed else a * math.sqrt(fan)
     region_pitch = region / (1.0 - req.inter_input_gap_frac)
+    # Near-square arrangements, but *not* forced square: the last row of a
+    # panel is usually short, and a 2:1 panel is a different piece of glass
+    # from a square one with the same pixel count.
     panel_cols = int(math.ceil(math.sqrt(nri)))
+    panel_rows = int(math.ceil(nri / panel_cols))
     screen_cols = int(math.ceil(math.sqrt(nro)))
-    l_panel = panel_cols * region_pitch
-    l_screen = screen_cols * out_pitch
+    screen_rows = int(math.ceil(nro / screen_cols))
+    l_panel_x = panel_cols * region_pitch
+    l_panel_y = panel_rows * region_pitch
+    l_screen_x = screen_cols * out_pitch
+    l_screen_y = screen_rows * out_pitch
+    l_panel, l_screen = max(l_panel_x, l_panel_y), max(l_screen_x, l_screen_y)
     if req.max_panel is not None and l_panel > req.max_panel:
         return None
     if req.max_screen is not None and l_screen > req.max_screen:
@@ -867,8 +1089,8 @@ def _evaluate(problem: ProblemSpec, req: Requirements, features: Features,
     # --- steering and pixel pitch ------------------------------------------- #
     # worst case is a corner region reaching the opposite corner output, which is
     # how OpticalMVM.check() measures it too
-    half = (l_panel + l_screen) / 2.0
-    corner = math.hypot(half, half)
+    corner = math.hypot((l_panel_x + l_screen_x) / 2.0,
+                        (l_panel_y + l_screen_y) / 2.0)
     theta_need = math.atan2(corner, z)
     if theta_need > math.radians(req.max_deflection_deg):
         return None
@@ -878,9 +1100,13 @@ def _evaluate(problem: ProblemSpec, req: Requirements, features: Features,
     p = min(p_steer, p_sampling)
     if p < req.min_device_pitch:
         return None
-    npx = int(math.ceil(l_panel / p))
-    if npx <= 0:
+    npx_x = int(math.ceil(l_panel_x / p))
+    npx_y = int(math.ceil(l_panel_y / p))
+    if npx_x <= 0 or npx_y <= 0:
         return None
+    # what one hologram actually occupies on the device
+    sub_px = a / p
+    region_px = region / p
 
     # --- error budget ------------------------------------------------------- #
     pen = model.routing_penalty(features, fan, nro)
@@ -935,7 +1161,14 @@ def _evaluate(problem: ProblemSpec, req: Requirements, features: Features,
         "z": z, "out_pitch": out_pitch, "guard": guard,
         "lasers": nri, "detectors": nro, "regions": nri,
         "subregions": 1 if features.multiplexed else fan,
-        "slm_pixels": npx * npx, "slm_pixels_x": npx, "slm_extent": l_panel,
+        "slm_pixels": npx_x * npx_y, "slm_pixels_x": npx_x,
+        "slm_pixels_y": npx_y, "slm_extent": l_panel,
+        "slm_extent_x": l_panel_x, "slm_extent_y": l_panel_y,
+        "panel_cols": panel_cols, "panel_rows": panel_rows,
+        "screen_cols": screen_cols, "screen_rows": screen_rows,
+        "screen_extent_x": l_screen_x, "screen_extent_y": l_screen_y,
+        "region_pitch": region_pitch,
+        "subaperture_px": sub_px, "region_px": region_px,
         "slm_pitch": p,
         "region_size": region, "subaperture": a,
         "spot_size": broadening * req.wavelength * z / a,
@@ -1020,6 +1253,8 @@ def estimate(problem: ProblemSpec, requirements: Requirements | None = None,
             "min_device_pitch, or widen the z / out_pitch search range")
 
     notes: list[str] = []
+    blocking = feat.validate(problem)
+    notes.extend(blocking)
     if measure:
         _, broad = mdl.window(feat.apodization)
         mdl = mdl.measured(feat, chosen["fan"], chosen["subaperture"],
@@ -1054,11 +1289,20 @@ def estimate(problem: ProblemSpec, requirements: Requirements | None = None,
 
     return CapacityReport(
         problem=problem, features=feat, requirements=req,
-        feasible=chosen["feasible"], binding=chosen["binding"],
+        feasible=chosen["feasible"] and not blocking,
+        binding="encoding_mismatch" if blocking else chosen["binding"],
         lasers=chosen["lasers"], detectors=chosen["detectors"],
         regions=chosen["regions"], subregions_per_region=chosen["subregions"],
         slm_pixels=chosen["slm_pixels"], slm_pixels_x=chosen["slm_pixels_x"],
+        slm_pixels_y=chosen["slm_pixels_y"],
         slm_extent=chosen["slm_extent"], slm_pitch=chosen["slm_pitch"],
+        slm_extent_x=chosen["slm_extent_x"], slm_extent_y=chosen["slm_extent_y"],
+        panel_cols=chosen["panel_cols"], panel_rows=chosen["panel_rows"],
+        screen_cols=chosen["screen_cols"], screen_rows=chosen["screen_rows"],
+        screen_extent_x=chosen["screen_extent_x"],
+        screen_extent_y=chosen["screen_extent_y"],
+        region_pitch=chosen["region_pitch"],
+        subaperture_px=chosen["subaperture_px"], region_px=chosen["region_px"],
         z=chosen["z"], out_pitch=chosen["out_pitch"],
         region_size=chosen["region_size"], subaperture=chosen["subaperture"],
         spot_size=chosen["spot_size"], screen_extent=chosen["screen_extent"],
