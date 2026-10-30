@@ -54,6 +54,36 @@ The four results worth reading off the output:
    between the two is the whole reason the panel, not the laser bar, is what
    runs out first.
 
+5. **What fits on a real panel is not panel pixels over pixels per hologram.**
+   Pixels per CGH is not a constant -- 1389 at ``n = 3``, 90472 at ``n = 30`` --
+   because the sub-aperture has to grow as the screen does, so dividing a fixed
+   panel by a fixed per-CGH figure badly overstates what it holds.  Sizing each
+   ``n`` at the panel's own pitch instead: a 16K-class panel at 3 um
+   (15360 x 8640, 133 Mpx) holds ``n = 12`` and not ``n = 14``, which wants
+   about 11100 x 10400.  **16:9 is the wrong shape** -- the region grid is near
+   square, so a *square* panel with the same 133 Mpx (11520 x 11520) holds
+   ``n = 14`` where the 16:9 one does not; the 4K-class panel fails ``n = 8``
+   the same way, with pixels to spare and too few rows.  And **pitch buys
+   reach as well as pixels**: steering is ``arcsin(lambda / 2p)`` -- 29.8,
+   15.0, 11.2 and 5.6 deg at 1.56, 3, 4 and 8 um -- so a coarser panel needs
+   more pixels for the same problem (``n = 14``: 86, 116, 146 Mpx at 1.56, 3,
+   4 um), and at 8 um no size in the sweep reaches 4 bits at all.  More pixels
+   still beat finer pitch when the factor is large: a 32K panel at 4 um has
+   four times the 16K's pixels and holds ``n = 14``.
+
+6. **A flat detector array taxes exactly the panels that steer widest.**  Off
+   axis a flat screen stretches the spot ``1/cos^3`` radially (the planar
+   panel's foreshortening, the longer range and the oblique landing together),
+   1.51x at 29.4 deg.  At 3 um the corner is only 15 deg out, the stretch is
+   1.11x and the bit margin absorbs it: the 3 um sizes do not move.  At 1.56 um
+   with ``screen="flat"`` the search backs off to ~23 deg, the fine panel's
+   extra reach goes unused, and its pixels still have to cover a larger
+   hologram -- 34 Mpx at ``n = 10`` against 25 at 3 um, so **with a flat
+   detector "pitch beats pixel count" reverses**.  A curved detector puts the
+   1.56 um numbers back: it removes the screen's share of the stretch (not the
+   planar panel's ``1/cos``), and the remaining 1.15x costs a few hundredths
+   of a bit.
+
 The third panel takes the *why* of the first: the panel is a product of three
 growing factors -- regions, sub-apertures per region, and pixels per hologram --
 and on a log axis a product is a sum of heights.  Hologram count and
@@ -64,6 +94,8 @@ unsurprising while this shows two independent explosions stacking.
     python examples/09_ccg_scaling.py
     python examples/09_ccg_scaling.py --save docs/figures
 """
+
+import math
 
 import numpy as np
 
@@ -99,6 +131,28 @@ COMMERCIAL_MPX = 8.0
 #: The hard-edged reference and the apodized variant, both area division.
 HARD = Features(routing="subregions")
 APOD = Features(routing="subregions", apodization="tukey")
+
+#: Panels to fit against: ``(name, columns, rows, pitch)``.  Generic classes
+#: rather than catalogue parts -- the 4K line is roughly what a phase LCoS
+#: ships at today, the rest are what a fab could be asked for.  The square one
+#: has the 16K's pixel budget in the shape the region grid actually wants.
+PANELS = (
+    ("4K-class", 4160, 2464, 3.74e-6),
+    ("8K-class", 7680, 4320, 3.0e-6),
+    ("16K-class", 15360, 8640, 3.0e-6),
+    ("square 133 Mpx", 11520, 11520, 3.0e-6),
+    ("32K-class", 30720, 17280, 4.0e-6),
+    ("16K-class, fine", 15360, 8640, 1.56e-6),
+)
+
+#: WCSP sizes to try against each panel.  Denser than ``SIZES`` around the
+#: crossings, because "which is the largest that fits" is the question.
+PANEL_SIZES = (3, 5, 8, 10, 12, 14, 16, 20)
+
+#: Pitches whose steering reach is printed, and the one swept for screen shape:
+#: the obliquity of a flat screen only matters where the deflection is wide.
+STEER_PITCHES = (1.56e-6, 3.0e-6, 4.0e-6, 8.0e-6)
+WIDE_PITCH = 1.56e-6
 
 
 def anchor() -> dict:
@@ -150,6 +204,112 @@ def size_rows() -> list[dict]:
                      "hard": baseline(problem, req),
                      "apod": estimate(problem, req, APOD)})
     return rows
+
+
+def sized_at(pitch: float, screen: str = "ideal") -> dict:
+    """``{n: report}`` for every ``PANEL_SIZES`` entry, designed for one pitch.
+
+    ``min_device_pitch`` is the honest way to say "this panel": the search may
+    still pick a coarser design pitch (the hologram is then oversampled on the
+    real device), never a finer one.
+    """
+    out = {}
+    for n in PANEL_SIZES:
+        problem = ProblemSpec.from_graph(ccg_wcsp_graph(n), iterations=ITERATIONS,
+                                         label=f"ccg-{n}")
+        req = Requirements(target_bits=TARGET_BITS, min_device_pitch=pitch,
+                           screen=screen)
+        out[n] = baseline(problem, req)
+    return out
+
+
+def on_panel(rep, pitch: float) -> tuple[int, int]:
+    """Pixels the design occupies when written at the panel's own pitch."""
+    return (int(math.ceil(rep.slm_extent_x / pitch)),
+            int(math.ceil(rep.slm_extent_y / pitch)))
+
+
+def fits(rep, cols: int, rows: int, pitch: float) -> bool:
+    """Feasible, and its footprint fits the panel in either orientation."""
+    nx, ny = on_panel(rep, pitch)
+    return rep.feasible and ((nx <= cols and ny <= rows) or (nx <= rows and ny <= cols))
+
+
+def panel_study() -> dict:
+    """Every panel against every size, once per distinct pitch."""
+    by_pitch = {p: sized_at(p) for p in sorted({p for *_, p in PANELS})}
+    for p in STEER_PITCHES:
+        by_pitch.setdefault(p, sized_at(p))
+    screens = {s: sized_at(WIDE_PITCH, s) for s in ("flat", "curved")}
+    screens["ideal"] = by_pitch[WIDE_PITCH]
+    screens_3um = sized_at(3.0e-6, "flat")
+    return {"by_pitch": by_pitch, "screens": screens, "flat_3um": screens_3um}
+
+
+def print_panels(rows, study: dict) -> None:
+    by_pitch = study["by_pitch"]
+    print(f"\n-- what fits on a real panel "
+          f"(dual rail, area division, {TARGET_BITS:.0f} bits) --")
+    print("  pixels per CGH is not a constant, so a panel cannot be divided by one:")
+    print("  " + "   ".join(f"n={r['n']}: {r['hard'].pixels_per_cgh}"
+                            for r in rows if r["n"] <= 30) + "  px/CGH")
+    print("  (the sub-aperture grows with the screen it has to resolve.  Below, each")
+    print("   size is designed at the panel's own pitch and counted on that panel)")
+    print(f"\n  {'panel':<17s}{'pixels':>14s}{'Mpx':>7s}{'pitch':>8s}"
+          f"{'largest n':>11s}   needs at the next size")
+    for name, cols, rows, pitch in PANELS:
+        reps = by_pitch[pitch]
+        ok = [n for n in PANEL_SIZES if fits(reps[n], cols, rows, pitch)]
+        best = max(ok) if ok else None
+        nxt = next((n for n in PANEL_SIZES if best is None or n > best), None)
+        need = ""
+        if nxt is not None:
+            nx, ny = on_panel(reps[nxt], pitch)
+            need = (f"n={nxt}: {nx} x {ny} ({nx * ny / 1e6:.0f} Mpx)"
+                    + ("" if reps[nxt].feasible else ", misses the bit target"))
+        print(f"  {name:<17s}{f'{cols}x{rows}':>14s}{cols * rows / 1e6:>7.0f}"
+              f"{pitch * 1e6:>6.2f}um{str(best):>11s}   {need}")
+    print("  (the 16:9 panel runs out of rows, not pixels: the region grid is near")
+    print("   square, so the same budget as 11520 x 11520 reaches one size further)")
+
+    print("\n  pitch sets the reach before it sets the pixel count:")
+    print(f"  {'pitch':>8s}{'steers':>9s}" + "".join(f"{f'n={n} Mpx':>11s}"
+                                                   for n in (10, 14, 20)))
+    for p in STEER_PITCHES:
+        reps = by_pitch[p]
+        cells = []
+        for n in (10, 14, 20):
+            nx, ny = on_panel(reps[n], p)
+            cells.append(f"{nx * ny / 1e6:>10.0f}" + (" " if reps[n].feasible else "!"))
+        print(f"  {p * 1e6:>6.2f}um{math.degrees(math.asin(1550e-9 / (2 * p))):>7.1f}deg"
+              + "".join(cells))
+    print("  ('!' misses the 4-bit target at any power -- binding constraint")
+    print("   accuracy_floor -- so the pixel count beside it is not a design)")
+
+    sc = study["screens"]
+
+    def mpx(rep, pitch):
+        nx, ny = on_panel(rep, pitch)
+        return nx * ny / 1e6
+
+    print(f"\n  detector shape: Mpx on a {WIDE_PITCH * 1e6:.2f} um panel, where the "
+          f"steering is wide, and on a 3 um one")
+    print(f"  {'WCSP n':>7s}" + "".join(f"{s:>9s}" for s in ("ideal", "curved", "flat"))
+          + f"{'flat deg':>10s}{'flat stretch':>14s}{'3um ideal':>11s}{'3um flat':>10s}")
+    for n in (10, 12, 14):
+        cells = "".join(f"{mpx(sc[s][n], WIDE_PITCH):>9.1f}"
+                        for s in ("ideal", "curved", "flat"))
+        f = sc["flat"][n]
+        print(f"  {n:>7d}{cells}{math.degrees(f.deflection_needed):>10.1f}"
+              f"{f'{f.spot_stretch[0]:.2f} x {f.spot_stretch[1]:.2f}':>14s}"
+              f"{mpx(by_pitch[3.0e-6][n], 3e-6):>11.1f}"
+              f"{mpx(study['flat_3um'][n], 3e-6):>10.1f}")
+    print("  (a flat array stretches the corner spot 1/cos^3 radially, so the search")
+    print("   steers less -- the fine panel's extra reach goes unused while its finer")
+    print("   pixels still have to cover a larger hologram, and it ends up *behind*")
+    print("   the 3 um panel.  At 3 um the corner is only 15 deg out and nothing")
+    print("   moves.  A curved detector removes the screen's share of the stretch,")
+    print("   not the planar panel's 1/cos, and the bit margin absorbs the rest)")
 
 
 def main() -> None:
@@ -225,13 +385,17 @@ def main() -> None:
     print(shown["hard"].components())
     print(f"\n{shown['hard'].table()}")
 
+    study = panel_study()
+    print_panels(rows, study)
+
     if _figure.wanted():
-        make_figure(rows)
+        make_figure(rows, study)
 
 
-def make_figure(rows) -> None:
+def make_figure(rows, study) -> None:
     plt = _figure.pyplot()
-    fig, ax = plt.subplots(1, 3, figsize=(15, 4.2))
+    fig, axes = plt.subplots(2, 2, figsize=(13, 8.6))
+    ax = axes.ravel()
 
     n = np.array([r["n"] for r in rows], dtype=float)
     hard = [r["hard"] for r in rows]
@@ -338,6 +502,40 @@ def make_figure(rows) -> None:
     ax[2].set_title("the panel is a product, and both factors grow")
     ax[2].legend(fontsize=7.5, loc="lower right")
     ax[2].grid(True, which="both", alpha=0.3)
+
+    # --- 4. real panels: pixels needed at each pitch, against what exists --- #
+    # Required pixels on the panel's own pitch, so the curves can be read
+    # against a panel's pixel count directly.  Pixel count is necessary but not
+    # sufficient -- the shape has to fit too -- which is what the n=14 note says.
+    ns = np.array(PANEL_SIZES, dtype=float)
+    colours = {1.56e-6: "#2a7fbf", 3.0e-6: "#2f9e44", 4.0e-6: "#d9821b"}
+    for p, col in colours.items():
+        reps = study["by_pitch"][p]
+        mpx = [np.prod(on_panel(reps[n], p)) / 1e6 for n in PANEL_SIZES]
+        ax[3].semilogy(ns, mpx, "o-", color=col, lw=1.5, ms=5,
+                       label=f"{p * 1e6:.2f} um  "
+                             f"(steers {math.degrees(math.asin(1550e-9 / (2 * p))):.0f} deg)")
+        mark = [(n, m) for n, m in zip(PANEL_SIZES, mpx) if not reps[n].feasible]
+        for n, m in mark:
+            ax[3].plot([n], [m], "o", ms=11, mfc="none", mec=bad, mew=1.8, zorder=5)
+    flat = study["screens"]["flat"]
+    ax[3].semilogy(ns, [np.prod(on_panel(flat[n], WIDE_PITCH)) / 1e6 for n in PANEL_SIZES],
+                   "o--", color=colours[WIDE_PITCH], lw=1.2, ms=4, mfc="white",
+                   label=f"{WIDE_PITCH * 1e6:.2f} um, flat detector array")
+    for name, cols, rows_, _ in PANELS:
+        if name in ("4K-class", "16K-class", "32K-class"):
+            ax[3].axhline(cols * rows_ / 1e6, color="0.4", ls=":", lw=1.0, zorder=1)
+            ax[3].text(ns[0], cols * rows_ / 1e6 * 1.12, f"{name} {cols}x{rows_}",
+                       fontsize=7, color="0.3", va="bottom")
+    ax[3].annotate("n=14 at 3 um: 133 Mpx is enough\nas 11520 x 11520, not as 16:9",
+                   xy=(14, np.prod(on_panel(study["by_pitch"][3.0e-6][14], 3e-6)) / 1e6),
+                   xytext=(15.2, 14), fontsize=7.5, color="0.25",
+                   arrowprops=dict(arrowstyle="->", color="0.5", lw=0.9))
+    ax[3].set_xlabel("WCSP variables  $n$")
+    ax[3].set_ylabel("panel pixels needed at that pitch [Mpx]")
+    ax[3].set_title("pitch sets the reach, and 16:9 is the wrong shape")
+    ax[3].legend(fontsize=7, loc="lower right")
+    ax[3].grid(True, which="both", alpha=0.3)
 
     _figure.finish(fig, "09_ccg_scaling")
 
