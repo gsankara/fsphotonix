@@ -26,6 +26,8 @@ from fsphotonix.capacity import (
     compare,
     estimate,
     measure_routing,
+    obliquity_stretch,
+    _axis_stretch,
 )
 from fsphotonix.solvers.aim import maxcut_ising, random_graph
 
@@ -491,3 +493,148 @@ def test_the_panel_is_not_forced_square():
     assert rep.panel_cols * rep.panel_rows >= rep.regions
     assert (rep.panel_cols - 1) * rep.panel_rows < rep.regions
     assert rep.slm_pixels_y < rep.slm_pixels_x
+
+
+# --------------------------------------------------------------------------- #
+# off-axis spots: flat vs curved detector
+# --------------------------------------------------------------------------- #
+_LAM, _A, _Z = 1.55e-6, 20e-6, 0.4e-3
+_REF = _LAM * _Z / _A
+
+
+def _fwhm(x, intensity):
+    """Interpolated full width at half maximum of a single-peaked cut."""
+    i = intensity / intensity.max()
+    k = int(np.argmax(i))
+    lo, hi = k, k
+    while lo > 0 and i[lo] > 0.5:
+        lo -= 1
+    while hi < len(i) - 1 and i[hi] > 0.5:
+        hi += 1
+    xl = x[lo] + (0.5 - i[lo]) * (x[lo + 1] - x[lo]) / (i[lo + 1] - i[lo])
+    xr = x[hi - 1] + (0.5 - i[hi - 1]) * (x[hi] - x[hi - 1]) / (i[hi] - i[hi - 1])
+    return xr - xl
+
+
+def test_a_flat_screen_stretches_the_spot_as_the_wave_optics_does():
+    """The package's own non-paraxial kernel, not trigonometry, sets the number.
+
+    An exact spherical ``SpotFocuser`` on a square sub-aperture, steered to
+    29.4 deg and propagated by ``AngularSpectrum`` onto the parallel plane: the
+    spot comes out ``1/cos^3`` wide radially and ``1/cos`` tangentially.  A
+    ``1/cos^2`` sketch (range plus obliquity, forgetting that the planar panel
+    foreshortens the aperture) would be 13% short radially, so this tolerance
+    tells them apart.
+    """
+    from fsphotonix import engine as eng
+    from fsphotonix.grid import Grid
+    from fsphotonix.modulators.gratings.lenses import SpotFocuser
+    from fsphotonix.propagation.kernels import AngularSpectrum
+
+    th = math.radians(29.4)
+    X = _Z * math.tan(th)
+    # wide enough in x that the Matsushima band limit still passes 30 deg
+    g = Grid(nx=4096, ny=512, dx=0.5e-6, x0=X / 2)
+    XX, YY = (eng.to_numpy(v) for v in g.meshgrid())
+    sf = SpotFocuser(target_x=X, range_z=_Z, spherical=True, design_wavelength=_LAM)
+    inside = (np.abs(XX) <= _A / 2) & (np.abs(YY) <= _A / 2)
+    phase = eng.to_numpy(sf.phase(eng.asarray(XX), eng.asarray(YY)))
+    u = np.where(inside, np.exp(1j * phase), 0).astype(complex)
+    out = eng.to_numpy(AngularSpectrum().apply(eng.asarray(u), g, g, _LAM, _Z))
+    intensity = np.abs(out) ** 2
+    iy, ix = np.unravel_index(np.argmax(intensity), intensity.shape)
+    radial = _fwhm(XX[0], intensity[iy]) / (0.886 * _REF)
+    tangential = _fwhm(YY[:, 0], intensity[:, ix]) / (0.886 * _REF)
+
+    want_r, want_t = obliquity_stretch(th, "flat")
+    assert radial == pytest.approx(want_r, rel=0.03)
+    assert tangential == pytest.approx(want_t, rel=0.03)
+    assert radial > 1.1 / math.cos(th) ** 2  # not the 1/cos^2 sketch
+
+
+def test_a_curved_screen_leaves_the_panels_foreshortening():
+    """On a sphere centred on the aperture the spot is not round.
+
+    Direct Rayleigh-Sommerfeld summation onto the sphere through the focus:
+    range is constant and incidence normal, so the tangential width is the
+    on-axis one, but the planar sub-aperture is still seen foreshortened, so
+    the radial width keeps one ``1/cos``.  A curved detector removes the
+    screen's share of the obliquity and not the panel's.
+    """
+    from fsphotonix import engine as eng
+    from fsphotonix.modulators.gratings.lenses import SpotFocuser
+
+    k = 2 * np.pi / _LAM
+    th = math.radians(29.4)
+    R = _Z / math.cos(th)
+    ds = 0.25e-6
+    s = (np.arange(int(round(_A / ds))) - (int(round(_A / ds)) - 1) / 2) * ds
+    XS, YS = np.meshgrid(s, s)
+    sf = SpotFocuser(target_x=_Z * math.tan(th), range_z=_Z, spherical=True,
+                     design_wavelength=_LAM)
+    U = np.exp(1j * eng.to_numpy(sf.phase(eng.asarray(XS), eng.asarray(YS))))
+    XS, YS, U = XS.ravel(), YS.ravel(), U.ravel()
+    ref = _LAM * R / _A
+    arc = np.linspace(-2.5, 2.5, 121) * ref
+
+    def cut(points):
+        out = []
+        for px, py, pz in points:
+            r = np.sqrt((px - XS) ** 2 + (py - YS) ** 2 + pz**2)
+            out.append(np.sum(U * np.exp(1j * k * r) / r * (pz / r)))
+        return np.abs(np.array(out)) ** 2
+
+    radial_pts = [(R * math.sin(th + d / R), 0.0, R * math.cos(th + d / R))
+                  for d in arc]
+    rho = R * math.sin(th)
+    tangential_pts = [(rho * math.cos(d / rho), rho * math.sin(d / rho),
+                       R * math.cos(th)) for d in arc]
+    radial = _fwhm(arc, cut(radial_pts)) / (0.886 * ref)
+    tangential = _fwhm(arc, cut(tangential_pts)) / (0.886 * ref)
+
+    want_r, want_t = obliquity_stretch(th, "curved")
+    assert radial == pytest.approx(want_r, rel=0.03)
+    assert tangential == pytest.approx(want_t, rel=0.03)
+    assert radial > 1.1  # not round: a curved detector does not make the model true
+
+
+def test_obliquity_stretch_orders_the_three_screens():
+    for deg in (0.0, 10.0, 20.0, 29.4):
+        th = math.radians(deg)
+        flat, curved, ideal = (obliquity_stretch(th, s) for s in ("flat", "curved", "ideal"))
+        assert ideal == (1.0, 1.0)
+        assert flat[0] >= curved[0] >= ideal[0]
+        assert flat[1] >= curved[1] == 1.0
+        # flat is curved times the screen's own two factors, range and tilt
+        assert flat[0] == pytest.approx(curved[0] / math.cos(th) ** 2)
+    with pytest.raises(ValueError):
+        obliquity_stretch(0.1, "spherical")
+    with pytest.raises(ValueError):
+        Requirements(screen="spherical")
+
+
+def test_axis_stretch_is_exact_along_an_axis_and_symmetric_on_the_diagonal():
+    assert _axis_stretch(1.5, 1.1, 1.0, 0.0) == pytest.approx((1.5, 1.1))
+    ex, ey = _axis_stretch(1.5, 1.1, math.sqrt(0.5), math.sqrt(0.5))
+    assert ex == pytest.approx(ey)
+    assert 1.1 < ex < 1.5
+
+
+def test_a_flat_screen_never_sizes_cheaper_than_a_curved_one():
+    """Stretching the spot can only cost: more panel, or less accuracy, or both.
+
+    And curving the detector recovers the ideal geometry here: at these sizes
+    the steering pitch binds, the curved stretch is small enough that the same
+    point stays feasible, and only the bit margin moves.
+    """
+    p = _problem(16)
+    reps = {s: baseline(p, Requirements(target_bits=4.0, screen=s))
+            for s in ("ideal", "curved", "flat")}
+    assert reps["flat"].slm_pixels >= reps["curved"].slm_pixels >= reps["ideal"].slm_pixels
+    assert reps["flat"].achievable_bits <= reps["ideal"].achievable_bits
+    assert reps["curved"].achievable_bits <= reps["ideal"].achievable_bits
+    assert reps["flat"].spot_stretch[0] > reps["curved"].spot_stretch[0] > 1.0
+    assert reps["ideal"].spot_stretch == (1.0, 1.0)
+    # an ideal report says what it is leaving out
+    assert any("flat detector" in n for n in reps["ideal"].notes)
+    assert not any("flat detector" in n for n in reps["flat"].notes)

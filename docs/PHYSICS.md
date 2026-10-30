@@ -93,7 +93,7 @@ waist     = 0.75 · λ z / D_subaperture     (matched to the sinc main-lobe FWHM
 
 Cost is O(sub-regions × orders) and independent of screen resolution.
 
-**Exact**: spot positions (non-paraxial), powers, spot widths, and the wavelength
+**Exact**: spot positions (non-paraxial), powers, on-axis spot widths, and the wavelength
 dependence of all three. Beamlets within one coherence group are summed as complex
 amplitudes, so interference between overlapping spots is modelled, and each beamlet
 carries its propagation direction so a downstream diffractive plane sees the right
@@ -103,6 +103,14 @@ incidence.
 transform), and the wavefront within one beamlet (a single tilt plus a piston, so a
 strongly aberrated sub-aperture is not resolved). Use a wave kernel when the wings
 or the aberrations are the answer.
+
+**Off axis the width is the on-axis one.** The waist is `0.75 λz/D` at every
+angle, but a sub-aperture on a planar panel steered to θ onto a parallel screen
+gives a spot `1/cos³θ` wider radially and `1/cos θ` tangentially — the panel
+foreshortens the aperture, the screen is further away and is struck obliquely.
+Measured with `angular_spectrum` and by direct Rayleigh–Sommerfeld summation to
+about 1% up to 29.4°, where it is 1.51 × 1.15. On a screen curved about the
+panel it is `1/cos θ` × 1. `capacity.obliquity_stretch` has the factors.
 
 ### Choosing a kernel
 

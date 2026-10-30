@@ -26,6 +26,15 @@ everything else::
     p       = min( lambda / (2 sin theta),  a / K )          steering vs pixels/sub-aperture
     N_pix   = (L_panel / p)^2
 
+``lambda z / a`` is the spot on axis only.  Off axis a flat panel foreshortens
+the sub-aperture to ``a cos(theta)``, and a flat screen both sits further away
+(``z / cos``) and is struck obliquely, so the worst spot is stretched by
+``1/cos^3`` radially and ``1/cos`` tangentially -- 1.51 x 1.15 at 29.4 deg,
+measured by wave propagation (``tests/test_capacity.py``).
+``Requirements.screen`` decides which spot the cross-talk term is evaluated on
+-- that worst one, a curved detector's, or the uniform ideal -- and
+:func:`obliquity_stretch` has all three.
+
 Both free parameters pull against themselves, which is why this is an
 optimisation and not a formula. A small ``out_pitch`` keeps the screen and the
 deflection angle small (coarse pixels allowed) but forces a *large*
@@ -91,6 +100,8 @@ __all__ = [
     "measure_routing",
     "window_metrics",
     "read_qubo",
+    "obliquity_stretch",
+    "SCREENS",
 ]
 
 
@@ -377,17 +388,81 @@ class Requirements:
     max_deflection_deg: float = 30.0
     max_panel: float | None = None
     max_screen: float | None = None
+    #: Shape of the detector surface, which decides how much the off-axis spots
+    #: grow (:func:`obliquity_stretch`).  ``flat`` is a planar photodiode array,
+    #: the part you can buy.  ``curved`` is a sphere of radius ``z`` centred on
+    #: the panel: normal incidence at constant range, which removes the screen's
+    #: share but not the panel's foreshortening.  ``ideal`` is a uniform
+    #: ``lambda z / a`` everywhere -- what this module always assumed, and what
+    #: the beamlet propagator still assumes (its waist is ``0.75 lambda z / D``
+    #: at every angle), so it stays the default while the two agree and every
+    #: ideal report carries a note quoting what a flat array would cost.
+    #: Sizing for ``flat`` on CCG designs moves the optimum from ~30 to ~23 deg,
+    #: grows the panel 13-42% and costs most of the half-bit margin.
+    screen: str = "ideal"
     objective: str = "slm_pixels"  # slm_pixels | panel_area | optical_power
     search_points: int = 96
 
     def __post_init__(self):
         if self.objective not in ("slm_pixels", "panel_area", "optical_power"):
             raise ValueError(f"unknown objective {self.objective!r}")
+        if self.screen not in SCREENS:
+            raise ValueError(f"unknown screen {self.screen!r}; have {SCREENS}")
 
 
 # --------------------------------------------------------------------------- #
 # the coefficients -- a model, and labelled as one
 # --------------------------------------------------------------------------- #
+SCREENS = ("flat", "curved", "ideal")
+
+
+def obliquity_stretch(theta: float, screen: str = "flat") -> tuple[float, float]:
+    """``(radial, tangential)`` growth of a spot steered to ``theta``, over ``lambda z/a``.
+
+    Two surfaces contribute, and only one of them can be curved away.  The
+    *panel* is planar silicon, so a sub-aperture seen from direction ``theta``
+    is foreshortened to ``a cos(theta)`` in the plane of deflection and its
+    angular spread grows by ``1/cos`` there -- whatever the detector does.  A
+    *flat screen* then adds two more factors: the spot sits at range
+    ``z / cos`` instead of ``z``, and it lands obliquely, smeared by another
+    ``1/cos`` radially.  Altogether::
+
+        flat     1/cos^3  radial,  1/cos  tangential
+        curved   1/cos    radial,  1      tangential   (sphere of radius z)
+        ideal    1                 1                   (the old assumption)
+
+    These are the wave-optics answer, not a ray sketch: an exact spherical
+    ``SpotFocuser`` propagated by the non-paraxial angular-spectrum kernel and
+    by direct Rayleigh-Sommerfeld summation reproduces all four to about 1%
+    from 0 to 29.4 deg, and ``tests/test_capacity.py`` pins the flat case.  So
+    a curved detector does *not* make the uniform-spot model true -- it leaves
+    the panel's ``1/cos``, 1.15x at 29.4 deg -- and a flat one is worse than a
+    ``1/cos^2`` estimate suggests: 1.51x, not 1.32x.
+    """
+    if screen not in SCREENS:
+        raise ValueError(f"unknown screen {screen!r}; have {SCREENS}")
+    c = math.cos(theta)
+    if screen == "ideal" or c <= 0:
+        return 1.0, 1.0
+    if screen == "curved":
+        return 1.0 / c, 1.0
+    return 1.0 / c**3, 1.0 / c
+
+
+def _axis_stretch(radial: float, tangential: float, cx: float,
+                  cy: float) -> tuple[float, float]:
+    """Spot growth along the detector lattice's two axes.
+
+    The worst spot is stretched along the line from its region to its detector,
+    which at a corner is a diagonal, while the cross-talk model is separable
+    along the lattice.  Each axis takes the spot's rms extent along it,
+    ``sqrt((e_r c)^2 + (e_t s)^2)``; against a Rayleigh-Sommerfeld cut at 45
+    deg that comes out about 4% wide, i.e. slightly conservative.
+    """
+    return (math.sqrt((radial * cx) ** 2 + (tangential * cy) ** 2),
+            math.sqrt((radial * cy) ** 2 + (tangential * cx) ** 2))
+
+
 #: Sub-aperture amplitude windows.  Imported from
 #: :mod:`fsphotonix.modulators.geometry` rather than redefined here, so the cost
 #: this module *predicts* for a window and the taper the optics actually renders
@@ -475,9 +550,10 @@ def window_metrics(name: str | None) -> tuple[float, float]:
     return throughput, broadening
 
 
-@lru_cache(maxsize=4096)
+@lru_cache(maxsize=16384)
 def _crosstalk_ratio(name: str, sep_u: float, half_u: float,
-                     reach: int = 3) -> tuple[float, float]:
+                     reach: int = 3, stretch_x: float = 1.0,
+                     stretch_y: float = 1.0) -> tuple[float, float]:
     """``(leak/signal, signal)`` for a square detector lattice of pitch ``sep_u``.
 
     Sums every neighbour out to ``reach`` lattice steps in both axes -- the
@@ -491,9 +567,16 @@ def _crosstalk_ratio(name: str, sep_u: float, half_u: float,
     window and the guard fraction, never on the throw or the detector pitch.
     That is also why ``spot_guard`` has to be a searched design parameter rather
     than a fixed margin: it is the *only* knob that moves optical cross-talk.
+
+    ``stretch_x``/``stretch_y`` grow the spot along each axis (an oblique spot,
+    see :func:`obliquity_stretch`).  The detectors do not grow with it, so in
+    the spot's own units both the neighbour and the collecting window shrink.
     """
-    s = {i: _capture(name, abs(i) * sep_u, half_u) for i in range(-reach, reach + 1)}
-    signal = s[0] * s[0]
+    sx = {i: _capture(name, abs(i) * sep_u / stretch_x, half_u / stretch_x)
+          for i in range(-reach, reach + 1)}
+    sy = {i: _capture(name, abs(i) * sep_u / stretch_y, half_u / stretch_y)
+          for i in range(-reach, reach + 1)}
+    signal = sx[0] * sy[0]
     if signal <= 0:
         return float("inf"), 0.0
     leak = 0.0
@@ -501,7 +584,7 @@ def _crosstalk_ratio(name: str, sep_u: float, half_u: float,
         for j in range(-reach, reach + 1):
             if i == 0 and j == 0:
                 continue
-            leak += s[i] * s[j]
+            leak += sx[i] * sy[j]
     return leak / signal, signal
 
 
@@ -783,6 +866,9 @@ class CapacityReport:
     update_rate: float
     mac_rate: float
     time_to_solution: float | None
+    #: ``(radial, tangential)`` growth of the worst (corner) spot over
+    #: ``spot_size``, from :func:`obliquity_stretch` for ``requirements.screen``
+    spot_stretch: tuple[float, float] = (1.0, 1.0)
     notes: list[str] = field(default_factory=list)
 
     @property
@@ -808,6 +894,9 @@ class CapacityReport:
             "region_size_um": self.region_size * 1e6,
             "subaperture_um": self.subaperture * 1e6,
             "spot_size_um": self.spot_size * 1e6,
+            "screen": self.requirements.screen,
+            "spot_stretch_radial": self.spot_stretch[0],
+            "spot_stretch_tangential": self.spot_stretch[1],
             "screen_extent_mm": self.screen_extent * 1e3,
             "deflection_needed_deg": math.degrees(self.deflection_needed),
             "deflection_available_deg": math.degrees(self.deflection_available),
@@ -843,6 +932,8 @@ class CapacityReport:
             f"{self.spot_size*1e6:.1f} um "
             f"({self.spot_size/self.out_pitch:.2f} x out_pitch); "
             f"{self.pixels_per_subaperture:.0f} px/sub-aperture",
+            f"  screen {r.screen}: corner spot {self.spot_stretch[0]:.2f} x "
+            f"{self.spot_stretch[1]:.2f} the axial one (radial x tangential)",
             f"  steer  need {math.degrees(self.deflection_needed):.2f} deg, "
             f"have {math.degrees(self.deflection_available):.2f} deg",
             f"  budget {self.achievable_bits:.1f} bits achievable vs "
@@ -944,8 +1035,10 @@ class CapacityReport:
                 ("screen", 1,
                  f"{self.screen_extent_x*1e3:.1f} x "
                  f"{self.screen_extent_y*1e3:.1f} mm, "
-                 f"spot {self.spot_size*1e6:.0f} um "
-                 f"({self.spot_size/self.out_pitch:.2f} x pitch)"),
+                 f"{req.screen}, spot {self.spot_size*1e6:.0f} um "
+                 f"({self.spot_size/self.out_pitch:.2f} x pitch) on axis, "
+                 f"{self.spot_stretch[0]:.2f} x {self.spot_stretch[1]:.2f} "
+                 f"that at the corner"),
             ],
             "electronics": [
                 ("update rate", "-", f"{self.update_rate:.3g} Hz"
@@ -1094,6 +1187,12 @@ def _evaluate(problem: ProblemSpec, req: Requirements, features: Features,
     theta_need = math.atan2(corner, z)
     if theta_need > math.radians(req.max_deflection_deg):
         return None
+    # the same corner ray carries the worst spot, stretched along its own
+    # direction across the screen
+    e_rad, e_tan = obliquity_stretch(theta_need, req.screen)
+    cx = (l_panel_x + l_screen_x) / 2.0 / corner if corner > 0 else 1.0
+    cy = (l_panel_y + l_screen_y) / 2.0 / corner if corner > 0 else 0.0
+    e_x, e_y = _axis_stretch(e_rad, e_tan, cx, cy)
     sin_need = math.sin(theta_need)
     p_steer = req.wavelength / (2.0 * sin_need) if sin_need > 0 else float("inf")
     p_sampling = a / max(req.min_pixels_per_subaperture, 1)
@@ -1116,8 +1215,11 @@ def _evaluate(problem: ProblemSpec, req: Requirements, features: Features,
     # collects over its own active width
     u_sep = broadening / guard  # == out_pitch * a / (lambda z), see _crosstalk_ratio
     u_half = 0.5 * req.detector_active_frac * u_sep
+    # stretches rounded so the cache still hits across the search plane; 1%
+    # of a spot width is far below anything the budget can resolve
     leak, capture = _crosstalk_ratio(features.apodization or "none",
-                                     round(u_sep, 9), round(u_half, 9))
+                                     round(u_sep, 9), round(u_half, 9), 3,
+                                     round(e_x, 2), round(e_y, 2))
     eps_xt = math.hypot(pen["crosstalk"], leak)
     bits = device.phase_bits
     eps_quant = ((2 * math.pi / (2 ** bits)) / (2 * math.sqrt(3.0))) if bits else 0.0
@@ -1172,6 +1274,7 @@ def _evaluate(problem: ProblemSpec, req: Requirements, features: Features,
         "slm_pitch": p,
         "region_size": region, "subaperture": a,
         "spot_size": broadening * req.wavelength * z / a,
+        "spot_stretch": (e_rad, e_tan),
         "screen_extent": l_screen,
         "theta_need": theta_need,
         "theta_have": float(np.arcsin(min(1.0, req.wavelength / (2 * p)))),
@@ -1268,6 +1371,12 @@ def estimate(problem: ProblemSpec, requirements: Requirements | None = None,
     elif chosen["penalty"].get("source") == "model":
         notes.append("routing penalty is a first-order model; pass measure=True "
                      "to synthesise the hologram instead")
+    if req.screen == "ideal":
+        fr, ft = obliquity_stretch(chosen["theta_need"], "flat")
+        notes.append(
+            f"screen='ideal' assumes a uniform lambda z / a spot; a flat detector "
+            f"array stretches the corner one {fr:.2f} x {ft:.2f} -- size with "
+            f"screen='flat' (or 'curved') for the hardware you would build")
 
     if not chosen["feasible"]:
         notes.append(
@@ -1316,7 +1425,8 @@ def estimate(problem: ProblemSpec, requirements: Requirements | None = None,
         achievable_bits=chosen["achievable_bits"],
         error_static=chosen["eps_static"], error_budget=chosen["eps_budget"],
         update_rate=chosen["rate"], mac_rate=chosen["mac"],
-        time_to_solution=chosen["tts"], notes=notes,
+        time_to_solution=chosen["tts"], spot_stretch=chosen["spot_stretch"],
+        notes=notes,
     )
 
 

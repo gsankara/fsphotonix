@@ -335,6 +335,17 @@ for more does not fail quietly: the written grating *aliases* and the light goes
 somewhere else, in the beamlet path as well as the wave path. `OpticalMVM` warns at
 construction and `check()` reports the margin.
 
+**Spot obliquity.** `λz/a` is the spot on axis only. A sub-aperture on a planar
+panel, steered to θ onto a *flat* detector array, is foreshortened to `a cos θ`,
+sits at range `z/cos θ` and lands obliquely, so its spot grows `1/cos³θ` radially
+and `1/cos θ` tangentially — 1.51 × 1.15 at 29.4°, measured with the
+angular-spectrum kernel and by direct Rayleigh–Sommerfeld summation. A detector
+curved on a sphere about the panel removes the screen's two factors but not the
+panel's, leaving `1/cos θ` radially. `capacity.Requirements(screen="flat" |
+"curved" | "ideal")` sizes for each; `ideal` (uniform spots, the beamlet
+propagator's assumption) is still the default, and an ideal report says what a
+flat array would cost.
+
 ## Layout
 
 ```
@@ -358,7 +369,7 @@ examples/ configs/ tests/ docs/
 python -m pytest tests -q
 ```
 
-217 tests covering: chirp-z transform against a direct DFT; Gaussian-beam
+235 tests covering: chirp-z transform against a direct DFT; Gaussian-beam
 diffraction, slit nulls and focal spot size against closed form; energy
 conservation in every kernel; blazed-grating `sinc²(depth−m)` and quantisation
 laws; binary-phase 4/π², Ronchi and Bessel order efficiencies; Dammann uniformity;
@@ -375,7 +386,10 @@ sub-bin target placement; and that a sized design agrees with `OpticalMVM.check(
 and lands inside the 1–5% rms accuracy band `docs/PHYSICS.md` reports; and that
 a `.qubo` file parses, that a feature set which cannot represent its problem is
 refused rather than sized, and that the per-hologram pixel counts are consistent
-with the regions and the panel that hold them.
+with the regions and the panel that hold them; that a flat screen stretches an
+off-axis spot `1/cos³θ` × `1/cos θ` and a curved one `1/cos θ` × 1, in the wave
+optics as well as in the sizing model; and that `ccg_wcsp_graph` reproduces the
+reduced 3-variable WCSP instance.
 
 ## Background
 

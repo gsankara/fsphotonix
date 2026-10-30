@@ -176,6 +176,7 @@ Each of these is a coupling the code makes measurable rather than hiding.
 | fan-out per hologram vs delivered weight accuracy | `route(mode=)`, `MultiSpotHologram.method` | `Superposition.uniformity`, `stray_fraction`, `resolved` |
 | sub-aperture taper vs throughput | `route(apodize=)`, `Apodized(window=)`, `tile_region(apodize=)` | `apodization_report` (`power_throughput`, `apodization_loss_db`), `gap_report()["apodization"]` |
 | far-field wing suppression vs main-lobe width | choice of `WINDOWS` entry, `mode=` | `apodization_report` (`mainlobe_broadening`, `spot_vs_target_pitch`), `apodization_sweep` |
+| steering reach vs off-axis spot growth | `Requirements.screen` (`flat` / `curved` / `ideal`), `min_device_pitch`, `max_deflection_deg` | `obliquity_stretch`, `CapacityReport.spot_stretch`, `deflection_needed` |
 
 ## Sizing a machine: `capacity.py`
 
@@ -243,6 +244,44 @@ The sign never lives in the hologram -- a CGH can hold a negative amplitude as a
 π phase shift, but the detector is square-law and destroys it, so the hologram
 carries `|W|` as a power share (`weight_mode`) and the sign lives in which rail
 the light lands on.
+
+### Off-axis spots, and what a curved detector does
+
+Every spot the sizing reasons about is `λz/a`, which is true on axis only. A
+region steering to angle θ sees three effects, and they split between the two
+surfaces:
+
+| | radial | tangential | removed by a curved detector? |
+|---|---|---|---|
+| planar panel foreshortens the sub-aperture to `a cos θ` | `1/cos θ` | 1 | no |
+| flat screen is further away, `z / cos θ` | `1/cos θ` | `1/cos θ` | yes |
+| flat screen is struck obliquely | `1/cos θ` | 1 | yes |
+
+So a flat detector array grows the worst spot `1/cos³θ × 1/cos θ` (1.51 × 1.15
+at 29.4°), and a detector curved on a sphere of radius `z` about the panel
+leaves `1/cos θ × 1` (1.15 × 1). These were measured, not derived: an exact
+spherical `SpotFocuser` propagated by the non-paraxial `AngularSpectrum` kernel
+and by direct Rayleigh–Sommerfeld summation reproduces all four factors to about
+1% from 0 to 29.4°, and `tests/test_capacity.py` pins both screens. A `1/cos²`
+sketch — range and tilt, forgetting the panel — under-calls the flat case by 13%
+and wrongly predicts round spots on the curved one.
+
+`Requirements.screen` chooses which spot the cross-talk term sees: `flat`,
+`curved`, or `ideal` (uniform `λz/a`, still the default because the beamlet
+propagator's `0.75 λz/D` waist assumes the same; an ideal report carries a note
+quoting the flat-array stretch). The worst spot is the corner one, stretched
+along a diagonal; it is projected onto the detector lattice's axes by its rms
+extent, which a Rayleigh–Sommerfeld cut at 45° shows to be about 4%
+conservative.
+
+What it costs depends on the pitch, because the pitch sets the angle. On CCG
+designs at 3 µm (15° of reach) a flat array changes nothing — the stretch is
+1.11× and the half-bit margin absorbs it. At 1.56 µm (30°) the search backs off
+to ~23° and, counted on the 1.56 µm panel, needs 34 Mpx instead of 18 at
+`n = 10` — behind the 3 µm panel's 25 — so **with a flat detector, finer pitch
+stops paying**. A curved detector restores the 1.56 µm numbers exactly, the
+residual `1/cos` costing four hundredths of a bit. `examples/09_ccg_scaling.py`
+prints the comparison.
 
 ## Tapering a sub-aperture instead of guarding it
 
